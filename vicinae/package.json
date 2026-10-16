@@ -1,0 +1,196 @@
+{
+  "$schema": "https://vicinae.com/schemas/extension.json",
+  "name": "wallpaper-picker",
+  "title": "Wallpaper Picker",
+  "description": "Browse the wallpaper library and apply it with a matugen theme.",
+  "icon": "icon.png",
+  "author": "silent",
+  "categories": ["Design Tools"],
+  "license": "MIT",
+  "commands": [
+    {
+      "name": "set-wallpaper",
+      "title": "Set Wallpaper",
+      "subtitle": "Wallpaper Picker",
+      "description": "Browse wallpapers, then choose a palette to theme the desktop with.",
+      "keywords": ["wallpaper", "background", "theme", "matugen"],
+      "mode": "view"
+    }
+  ],
+  "preferences": [
+    {
+      "name": "wallpaperDirectory",
+      "type": "directory",
+      "required": false,
+      "title": "Wallpaper folder",
+      "description": "Optional folder to scan instead of ~/Pictures/wallpaper. Subfolders are included up to the scan depth below."
+    },
+    {
+      "name": "scanDepth",
+      "type": "dropdown",
+      "required": false,
+      "title": "Subfolder depth",
+      "description": "How many levels below the wallpaper folder are scanned.",
+      "default": "2",
+      "data": [
+        { "title": "Folder only", "value": "1" },
+        { "title": "Folder + one level", "value": "2" },
+        { "title": "Three levels", "value": "3" },
+        { "title": "Four levels", "value": "4" },
+        { "title": "Five levels", "value": "5" }
+      ]
+    },
+    {
+      "name": "includeCurrent",
+      "type": "checkbox",
+      "required": false,
+      "title": "Library coverage",
+      "description": "Keep the currently applied wallpaper visible even when it lives outside the scanned folder.",
+      "label": "Include the current wallpaper",
+      "default": true
+    },
+    {
+      "name": "columns",
+      "type": "dropdown",
+      "required": false,
+      "title": "Columns",
+      "description": "How many wallpapers per row. Fewer columns means larger previews.",
+      "default": "4",
+      "data": [
+        { "title": "3 — largest previews", "value": "3" },
+        { "title": "4", "value": "4" },
+        { "title": "5", "value": "5" },
+        { "title": "6 — most at once", "value": "6" }
+      ]
+    },
+    {
+      "name": "layoutMode",
+      "type": "dropdown",
+      "required": false,
+      "title": "Grid layout",
+      "description": "Sections organize the library; Flat removes headers and is the lightest layout.",
+      "default": "flat",
+      "data": [
+        { "title": "Flat — smoothest scrolling", "value": "flat" },
+        { "title": "Sections — organized library", "value": "sections" }
+      ]
+    },
+    {
+      "name": "searchMode",
+      "type": "dropdown",
+      "required": false,
+      "title": "Grid mode",
+      "description": "Search filters wallpapers; Browse keeps the full grid visible for keyboard navigation. Either way, Ctrl+Shift+B swaps modes without leaving the picker.",
+      "default": "search",
+      "data": [
+        { "title": "Search — filter as you type", "value": "search" },
+        { "title": "Browse — keep all items visible", "value": "browse" }
+      ]
+    },
+    {
+      "name": "defaultSort",
+      "type": "dropdown",
+      "required": false,
+      "title": "Default sort",
+      "description": "How wallpapers are ordered when the picker opens.",
+      "default": "recent",
+      "data": [
+        { "title": "Recently added", "value": "recent" },
+        { "title": "Name", "value": "name" },
+        { "title": "Colour", "value": "hue" }
+      ]
+    },
+    {
+      "name": "defaultAction",
+      "type": "dropdown",
+      "required": false,
+      "title": "Enter action",
+      "description": "What pressing Enter on a wallpaper does first.",
+      "default": "palette",
+      "data": [
+        { "title": "Choose a palette", "value": "palette" },
+        { "title": "Apply the dominant palette immediately", "value": "dominant" },
+        { "title": "Set wallpaper and keep the current theme", "value": "wallpaper" }
+      ]
+    },
+    {
+      "name": "transition",
+      "type": "dropdown",
+      "required": false,
+      "title": "Wallpaper transition",
+      "description": "Animation used when applying a wallpaper.",
+      "default": "spotlight-wave",
+      "data": [
+        { "title": "Spotlight wave — focused reveal", "value": "spotlight-wave" },
+        { "title": "Iris close — closing circle", "value": "iris-close" },
+        { "title": "Wave sweep — top to bottom", "value": "wave-sweep" },
+        { "title": "Diagonal wipe — quick change", "value": "diagonal-wipe" },
+        { "title": "Soft fade — gentle crossfade", "value": "soft-fade" },
+        { "title": "None — apply instantly", "value": "none" }
+      ]
+    },
+    {
+      "name": "transitionDuration",
+      "type": "dropdown",
+      "required": false,
+      "title": "Transition duration",
+      "description": "How long animated transitions take. Auto uses the preset's tuned duration.",
+      "default": "auto",
+      "data": [
+        { "title": "Auto — recommended", "value": "auto" },
+        { "title": "0.3 s — very fast", "value": "0.3" },
+        { "title": "0.5 s — fast", "value": "0.5" },
+        { "title": "0.65 s — smooth", "value": "0.65" },
+        { "title": "0.8 s — relaxed", "value": "0.8" },
+        { "title": "1.0 s — slow", "value": "1.0" }
+      ]
+    },
+    {
+      "name": "resizeMode",
+      "type": "dropdown",
+      "required": false,
+      "title": "Wallpaper fit",
+      "description": "How images are fitted to each display.",
+      "default": "crop",
+      "data": [
+        { "title": "Crop — fill screen", "value": "crop" },
+        { "title": "Fit — preserve all of image", "value": "fit" },
+        { "title": "Stretch — fill exactly", "value": "stretch" },
+        { "title": "Original — no resize", "value": "no" }
+      ]
+    },
+    {
+      "name": "cropGravity",
+      "type": "dropdown",
+      "required": false,
+      "title": "Crop anchor",
+      "description": "Which part stays visible when crop mode trims an image. Only used when the wallpaper fit above is Crop.",
+      "default": "center",
+      "data": [
+        { "title": "Centre", "value": "center" },
+        { "title": "Top", "value": "top" },
+        { "title": "Bottom", "value": "bottom" },
+        { "title": "Left", "value": "left" },
+        { "title": "Right", "value": "right" },
+        { "title": "Top-left", "value": "top-left" },
+        { "title": "Top-right", "value": "top-right" },
+        { "title": "Bottom-left", "value": "bottom-left" },
+        { "title": "Bottom-right", "value": "bottom-right" }
+      ]
+    }
+  ],
+  "scripts": {
+    "bundle": "rm -rf assets/backend && mkdir -p assets/backend && cp ../*.sh assets/backend/",
+    "build": "npm run bundle && vici build && sh scripts/themed-icon.sh",
+    "dev": "npm run bundle && vici develop",
+    "lint": "vici lint",
+    "test": "node scripts/test-lib.mjs && python3 -m unittest discover -s ../tests -v"
+  },
+  "dependencies": {
+    "@vicinae/api": "^0.27.5"
+  },
+  "devDependencies": {
+    "@types/react": "^19.1.17",
+    "typescript": "^5.9.2"
+  }
+}
