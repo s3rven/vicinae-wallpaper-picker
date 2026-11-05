@@ -16,7 +16,7 @@ while [ "$#" -gt 0 ]; do
         --check) mode=check ;;
         --build-only) mode=build ;;
         --output)
-            [ "$#" -ge 2 ] && [ -n "$2" ] || { usage >&2; exit 2; }
+            if [ "$#" -lt 2 ] || [ -z "${2:-}" ]; then usage >&2; exit 2; fi
             output=$2; mode=build; shift ;;
         --help|-h) usage; exit 0 ;;
         *) printf 'Unknown option: %s\n' "$1" >&2; usage >&2; exit 2 ;;

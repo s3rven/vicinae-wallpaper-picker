@@ -8,7 +8,10 @@ script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 . "$script_dir/awww-lib.sh"
 
 wallpaper=$(realpath -e -- "$1")
-[ -f "$wallpaper" ] && [ -r "$wallpaper" ] || { printf 'Wallpaper is not a readable file.\n' >&2; exit 1; }
+if [ ! -f "$wallpaper" ] || [ ! -r "$wallpaper" ]; then
+    printf 'Wallpaper is not a readable file.\n' >&2
+    exit 1
+fi
 case "$wallpaper" in *$'\n'*|*$'\t'*) printf 'Wallpaper filenames cannot contain tabs or newlines.\n' >&2; exit 2 ;; esac
 transition=${2:-spotlight-wave}
 duration=${WALLPAPER_TRANSITION_DURATION:-}
