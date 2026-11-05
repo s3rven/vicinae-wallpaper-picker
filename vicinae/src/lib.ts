@@ -98,6 +98,27 @@ export function filterLibrary(items: Wallpaper[], filter: string, favourites: Se
   return filter.startsWith("c:") ? active.filter((w) => w.group === filter.slice(2)) : active;
 }
 
+// Keep the visible grid and shuffle pool on the same search results.
+export function searchLibrary(items: Wallpaper[], query: string): Wallpaper[] {
+  const normalise = (value: string) => value.normalize("NFKD").replace(/\p{M}/gu, "").toLowerCase();
+  const terms = normalise(query).trim().split(/\s+/).filter(Boolean);
+  if (!terms.length) return items;
+  const matches = (field: string, term: string) => {
+    let position = 0;
+    for (const character of term) {
+      const index = field.indexOf(character, position);
+      if (index < 0) return false;
+      position = index + character.length;
+    }
+    return true;
+  };
+  return items.filter((w) => {
+    const fields = [w.name, w.title, w.folder, ...w.tags, w.group, w.color, w.resolution,
+      isLive(w.path) ? "live video" : "still image"].map(normalise);
+    return terms.every((term) => fields.some((field) => matches(field, term)));
+  });
+}
+
 // scan-wallpapers.sh emits one tab-separated record per wallpaper:
 //   path \t name \t thumb \t current \t color \t folder \t mtime \t brightness
 // Fields past the second are optional in older output, so every read past
@@ -117,6 +138,8 @@ export async function scanWallpapers(options: ScanOptions = {}): Promise<Wallpap
   if (!existsSync(wanted)) throw new Error(`Wallpaper folder not found: ${wanted}`);
   if (!statSync(wanted).isDirectory()) throw new Error(`Choose a wallpaper folder, not a file: ${wanted}`);
   const directory = realpathSync(wanted);
+  try { accessSync(directory, constants.R_OK | constants.X_OK); }
+  catch { throw new Error(`Wallpaper folder is not readable: ${wanted}`); }
   env.WALLPAPER_DIR = directory;
   if (options.depth) env.WALLPAPER_SCAN_DEPTH = options.depth;
   if (typeof options.includeCurrent === "boolean") {

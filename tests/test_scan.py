@@ -67,6 +67,19 @@ class ScanRecords(unittest.TestCase):
         self.assertEqual(set(self.scan(WALLPAPER_SCAN_DEPTH='1')), {str(root)})
         self.assertEqual(set(self.scan(WALLPAPER_SCAN_DEPTH='2')), {str(root), str(nested)})
 
+    @unittest.skipIf(os.geteuid() == 0, 'root bypasses directory permissions')
+    def test_unreadable_library_reports_an_error_instead_of_empty_results(self):
+        (self.library / 'one.jpg').touch()
+        self.library.chmod(0o111)
+        try:
+            result = subprocess.run(['bash', str(ROOT / 'scan-wallpapers.sh')], env=self.env,
+                                    capture_output=True, text=True, timeout=10)
+        finally:
+            self.library.chmod(0o700)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('not readable', result.stderr)
+        self.assertEqual(result.stdout, '')
+
 
 @unittest.skipUnless(shutil.which('magick') or shutil.which('convert'), 'ImageMagick is optional')
 class Scan(unittest.TestCase):

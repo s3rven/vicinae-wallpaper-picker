@@ -80,6 +80,13 @@ try {
   const video = { ...wallpaper, path: "/wallpapers/clip.mp4" };
   assert.deepEqual(lib.filterLibrary([wallpaper, video, archive], "live", new Set()), [video]);
   assert.deepEqual(lib.filterLibrary([wallpaper, video, archive], "stills", new Set()), [wallpaper]);
+  const red = { ...wallpaper, name: "red-forest.jpg", title: "Red Forest", group: "red", tags: ["forest"], color: "#ff4400" };
+  assert.deepEqual(lib.searchLibrary([wallpaper, red, video], "BLUE city"), [wallpaper, video]);
+  assert.deepEqual(lib.searchLibrary([wallpaper, red, video], "bl ct still"), [wallpaper]);
+  assert.deepEqual(lib.searchLibrary([wallpaper, red, video], "live"), [video]);
+  assert.deepEqual(lib.searchLibrary([wallpaper, red], "no-matching-wallpaper"), []);
+  assert.deepEqual(lib.searchLibrary([{ ...wallpaper, title: "Café at Dusk" }], "cafe"), [{ ...wallpaper, title: "Café at Dusk" }]);
+  assert.equal(lib.searchLibrary(library, "   "), library);
   globalThis.vicinae.preferences = { includeCurrent: false, scanDepth: "1" };
   assert.equal(lib.commandOptions().scan.includeCurrent, false);
   assert.equal(lib.commandOptions().scan.depth, "1");
@@ -127,6 +134,12 @@ try {
   assert.equal(scanned[0].title, "Rainy alley");
   assert.deepEqual(scanned[0].tags, ["rain"]);
   assert.equal(scanned[0].brightness, 57);
+
+  if (process.getuid?.() !== 0) {
+    chmodSync(libraryDir, 0o111);
+    try { await assert.rejects(lib.scanWallpapers({ directory: libraryDir }), /not readable/); }
+    finally { chmodSync(libraryDir, 0o700); }
+  }
 
   assert.equal(lib.libraryDirectory("~/Pictures"), join(homedir(), "Pictures"));
   await assert.rejects(lib.scanWallpapers({ directory: join(libraryDir, "one.jpg") }), /Choose a wallpaper folder/);

@@ -9,6 +9,8 @@ filters and animated transitions through [awww](https://codeberg.org/LGFae/awww)
 The picker sets wallpapers. Desktop theming is separate; an optional
 [matugen example](examples/matugen/README.md) shows how to connect your own setup.
 
+[Install](#install) · [Features](#features) · [Keys](#keys) · [Live wallpapers](#live-wallpapers) · [Troubleshooting](#troubleshooting)
+
 ## Install
 
 Requires Linux, Vicinae and a Wayland compositor supported by awww, such as
@@ -22,8 +24,12 @@ cd vicinae-wallpaper-picker
 
 The installer checks dependencies, runs `npm ci` from the lockfile, and builds
 into Vicinae's extension directory. It does not need sudo or edit your desktop
-configuration. Run **Set Wallpaper** in Vicinae, then choose your wallpaper
-folder in extension preferences. The default is `~/Pictures/wallpaper`.
+configuration.
+
+1. Open **Set Wallpaper** in Vicinae.
+2. Choose your wallpaper folder in the extension preferences. The default is
+   `~/Pictures/wallpaper`; create it or select an existing folder.
+3. Search or choose a collection, select an image, and press **Enter**.
 
 Other installer options:
 
@@ -32,6 +38,10 @@ Other installer options:
 ./install.sh --build-only                  # build to release/extension
 ./install.sh --output /path/to/extension   # build to a chosen directory
 ```
+
+`--build-only` and `--output` can build on a headless Linux machine with
+Node.js/npm. Installs and `--check` also check the desktop tools below.
+`--check` cannot be combined with build/output options.
 
 | Dependency | Purpose |
 |---|---|
@@ -50,16 +60,30 @@ or be removed after installation. The installer downloads npm dependencies.
 The running picker makes no network requests; source links open only when you
 choose **Open Source Page**.
 
+### Update
+
+From your source checkout:
+
+```sh
+git pull --ff-only
+./install.sh
+```
+
+The installer rebuilds the extension from the lockfile. Your wallpaper library,
+favourites and local settings are kept outside the checkout.
+
 ## Features
 
 - Searchable thumbnail grid, favourites pinned first, and collections from
   subfolders. Archive/Old folders have their own filter.
 - Filter by collection, colour, favourites, current wallpaper, live or still.
-  Sort by colour, date or name; the picker remembers your filter and sort.
+  Sort by colour, modification date or name; the picker remembers your filter
+  and sort. Search matches names, titles, tags, folders and colour names.
 - Spotlight, iris, wave, wipe and fade transitions; adjustable duration, fit
   and crop anchor.
-- Set a random still from the current filter, or use **Random Wallpaper** on a
-  keybind. Videos are excluded from random selection.
+- Set a random still from the current search and filter, or use **Random
+  Wallpaper** on a keybind to shuffle the whole active library. Videos and the
+  current wallpaper are excluded from random selection.
 - **Previous Wallpaper** swaps between the last two successful choices.
 - Live wallpapers with manual pause and automatic pause behind windows on
   Hyprland. Pause policy is configurable in the action panel.
@@ -73,7 +97,7 @@ choose **Open Source Page**.
 | Key | Action |
 |---|---|
 | Enter | Set wallpaper |
-| Ctrl+Shift+R | Random still from the current filter |
+| Ctrl+Shift+R | Random still from the current search/filter |
 | Ctrl+F | Add/remove favourite |
 | Ctrl+S | Choose sort order |
 | Ctrl+Shift+B | Switch search/browse mode |
@@ -144,7 +168,9 @@ This imports into `<wallpaper folder>/Live`, caps the frame rate at 30 fps,
 removes audio and repeats short clips to reduce loop hitches. Set
 `WALLPAPER_LIVE_DIR` when your extension preference uses a different library.
 Without a detected Hyprland output size, the target is 1920x1080; smaller
-sources are not upscaled. Preparation requires ffmpeg and ffprobe.
+sources are not upscaled. Preparation requires ffmpeg, ffprobe and Python 3.
+If one clip fails, the rest of the batch continues; the command exits with a
+nonzero status to report any skipped or failed inputs. Existing files are kept.
 
 For a keybind, use **Pause or Resume Live Wallpaper**, or call the bundled
 `live-wallpaper.py` with `pause`, `resume`, `toggle`, or `status`. Manual pause
@@ -191,6 +217,17 @@ variables. Defaults:
 State and caches can contain absolute paths to your own files. They stay outside
 the source repository. The source exporter excludes them and Git history; see
 [RELEASING.md](RELEASING.md) before making the project public.
+
+## Troubleshooting
+
+| Problem | What to check |
+|---|---|
+| Empty library or folder error | Open extension preferences and select a readable folder containing JPEG, PNG, WebP or supported videos. Check the subfolder depth. |
+| Wallpaper does not change | Run `./install.sh --check`, then `awww query` in your Wayland session. The daemon must be reachable from the session running Vicinae. |
+| A failed apply closes the picker | Read `~/.local/state/wallpaper-picker/last-apply.log` (or its `XDG_STATE_HOME` equivalent) for the backend error. Desktop notifications need `notify-send`. |
+| Colours or small thumbnails are missing | Install ImageMagick and press Ctrl+R. The first scan fills the thumbnail/colour cache in the background. |
+| Live wallpaper shows only a still | Check the optional live dependencies and a working systemd user session. Inspect `journalctl --user -u wallpaper-live.service -b --no-pager` for player errors. |
+| Wallpaper changes but app colours do not | Theming is opt-in. Follow the [matugen example](examples/matugen/README.md) or configure your own post-apply hook. |
 
 ## Development
 

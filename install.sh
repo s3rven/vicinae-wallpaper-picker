@@ -3,6 +3,8 @@
 set -euo pipefail
 root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 mode=install
+check_only=false
+build_only=false
 invoking_dir=$PWD
 output=""
 usage() {
@@ -13,40 +15,53 @@ usage() {
 }
 while [ "$#" -gt 0 ]; do
     case "$1" in
-        --check) mode=check ;;
-        --build-only) mode=build ;;
+        --check) check_only=true ;;
+        --build-only) build_only=true ;;
         --output)
-            if [ "$#" -lt 2 ] || [ -z "${2:-}" ]; then usage >&2; exit 2; fi
-            output=$2; mode=build; shift ;;
+            if [ "$#" -lt 2 ] || [ -z "${2:-}" ] || [[ "$2" = --* ]]; then usage >&2; exit 2; fi
+            output=$2; build_only=true; shift ;;
         --help|-h) usage; exit 0 ;;
         *) printf 'Unknown option: %s\n' "$1" >&2; usage >&2; exit 2 ;;
     esac
     shift
 done
+if $check_only && $build_only; then
+    printf '%s\n' '--check cannot be combined with --build-only or --output.' >&2
+    exit 2
+fi
+if $check_only; then mode=check; elif $build_only; then mode=build; fi
 
 [ "$(uname -s)" = Linux ] || { printf 'This picker needs Linux and a Wayland compositor with awww support.\n' >&2; exit 1; }
 if [ "${BASH_VERSINFO[0]}" -lt 4 ] || { [ "${BASH_VERSINFO[0]}" -eq 4 ] && [ "${BASH_VERSINFO[1]}" -lt 4 ]; }; then
     printf 'Bash 4.4 or newer is required.\n' >&2; exit 1
 fi
 missing=()
-for tool in node npm awww awww-daemon flock realpath sha1sum find sort timeout; do
+required=(node npm)
+if [ "$mode" != build ]; then required+=(awww awww-daemon flock realpath sha1sum find sort timeout); fi
+for tool in "${required[@]}"; do
     command -v "$tool" >/dev/null 2>&1 || missing+=("$tool")
 done
 if [ "${#missing[@]}" -gt 0 ]; then
     printf 'Missing required tools: %s\n' "${missing[*]}" >&2
-    printf 'Install Node.js 22+, npm, awww, util-linux, coreutils and findutils with your package manager, then retry.\n' >&2
+    if [ "$mode" = build ]; then
+        printf 'Install Node.js 22+ and npm with your package manager, then retry.\n' >&2
+    else
+        printf 'Install Node.js 22+, npm, awww, util-linux, coreutils and findutils with your package manager, then retry.\n' >&2
+    fi
     exit 127
 fi
 node -e 'if (Number(process.versions.node.split(".")[0]) < 22) process.exit(1)' || {
     printf 'Node.js 22 or newer is required to build the extension.\n' >&2; exit 1;
 }
 printf 'Required dependencies found.\n'
-if ! command -v magick >/dev/null 2>&1 && ! command -v convert >/dev/null 2>&1; then
+if [ "$mode" != build ] && ! command -v magick >/dev/null 2>&1 && ! command -v convert >/dev/null 2>&1; then
     printf 'Optional: install ImageMagick for thumbnails and colour filters.\n'
 fi
-for tool in python3 mpvpaper ffmpeg ffprobe systemctl systemd-run; do
-    command -v "$tool" >/dev/null 2>&1 || printf 'Optional for live wallpapers: %s\n' "$tool"
-done
+if [ "$mode" != build ]; then
+    for tool in python3 mpvpaper ffmpeg ffprobe systemctl systemd-run; do
+        command -v "$tool" >/dev/null 2>&1 || printf 'Optional for live wallpapers: %s\n' "$tool"
+    done
+fi
 [ "$mode" != check ] || exit 0
 
 cd -- "$root/vicinae"

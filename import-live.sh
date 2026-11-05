@@ -46,8 +46,18 @@ size=${size:-1920x1080}
 w=${size%x*} h=${size#*x}
 mkdir -p -- "$dest"
 
+tmp=""
+cleanup_import() {
+    if [ -n "$tmp" ]; then rm -f -- "$tmp" "$tmp.loop.mp4"; fi
+}
+trap cleanup_import EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
 rc=0
 for src in "$@"; do
+    cleanup_import
+    tmp=""
     name=${src##*/}
     # Download sites append themselves: "-live-wallpaper-wallsflow-com", "-moewalls-com".
     base=$(sed -E 's/(-live-wallpaper)?-[a-z0-9]+-com$//' <<<"${name%.*}")
@@ -58,7 +68,9 @@ for src in "$@"; do
     if [ -e "$out" ]; then
         printf 'skip %s: %s already exists\n' "$name" "$out" >&2; rc=1; continue
     fi
-    src=$(realpath -e -- "$src")
+    if ! src=$(realpath -e -- "$src"); then
+        printf 'skip %s: source is no longer available\n' "$name" >&2; rc=1; continue
+    fi
     # One probe for frame rate and size, then the output geometry: crop to the
     # target's aspect, and shrink to the target only when the source is larger.
     if ! read -r fps ow oh < <(ffprobe -v error -select_streams v:0 \
@@ -72,23 +84,30 @@ iw, ih = s["width"], s["height"]
 cw, ch = (ih * W / H, ih) if iw / ih > W / H else (iw, iw * H / W)
 k = min(1, W / cw)
 even = lambda v: max(2, int(v * k) // 2 * 2)
-print(fps, even(cw), even(ch))' "$fps_cap" "$w" "$h"); then
+print(fps, even(cw), even(ch))' "$fps_cap" "$w" "$h" 2>/dev/null); then
         printf 'skip %s: could not read video geometry\n' "$name" >&2; rc=1; continue
     fi
     tmp="$out.$$.tmp.mp4"
-    trap 'rm -f -- "$tmp" "$tmp.loop.mp4"' EXIT
-    ffmpeg -nostdin -hide_banner -loglevel error -y -i "$src" -an \
+    if ! ffmpeg -nostdin -hide_banner -loglevel error -y -i "$src" -an \
         -vf "fps=$fps,scale=$ow:$oh:force_original_aspect_ratio=increase:flags=lanczos,crop=$ow:$oh" \
         -c:v libx264 -preset slow -crf 20 -profile:v high -pix_fmt yuv420p -g $((fps * 2)) \
-        -movflags +faststart "$tmp"
-    duration=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$tmp")
-    repeats=$(python3 -c 'import math, sys; print(max(1, math.ceil(float(sys.argv[2]) / float(sys.argv[1]))))' "$duration" "$min_loop")
-    if [ "$repeats" -gt 1 ]; then
-        ffmpeg -nostdin -hide_banner -loglevel error -y -stream_loop $((repeats - 1)) -i "$tmp" \
-            -c copy -movflags +faststart "$tmp.loop.mp4"
-        mv -f -- "$tmp.loop.mp4" "$tmp"
+        -movflags +faststart "$tmp"; then
+        printf 'skip %s: video encoding failed\n' "$name" >&2; rc=1; continue
     fi
-    mv -f -- "$tmp" "$out"
+    if ! duration=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$tmp") ||
+       ! repeats=$(python3 -c 'import math, sys; duration=float(sys.argv[1]); assert duration > 0; print(max(1, math.ceil(float(sys.argv[2]) / duration)))' "$duration" "$min_loop" 2>/dev/null); then
+        printf 'skip %s: could not read clip duration\n' "$name" >&2; rc=1; continue
+    fi
+    if [ "$repeats" -gt 1 ]; then
+        if ! ffmpeg -nostdin -hide_banner -loglevel error -y -stream_loop $((repeats - 1)) -i "$tmp" \
+            -c copy -movflags +faststart "$tmp.loop.mp4" || ! mv -fT -- "$tmp.loop.mp4" "$tmp"; then
+            printf 'skip %s: extending the video loop failed\n' "$name" >&2; rc=1; continue
+        fi
+    fi
+    # A second importer may have created the destination while encoding.
+    if ! mv -nT -- "$tmp" "$out" || [ -e "$tmp" ]; then
+        printf 'skip %s: destination already exists or could not be saved\n' "$name" >&2; rc=1; continue
+    fi
     printf '%s -> %s (%sx%s, %s fps, %sx loop)\n' "$name" "$out" "$ow" "$oh" "$fps" "$repeats"
 done
 exit "$rc"

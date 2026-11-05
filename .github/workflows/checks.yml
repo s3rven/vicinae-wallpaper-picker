@@ -18,13 +18,10 @@ jobs:
           cache: npm
           cache-dependency-path: vicinae/package-lock.json
       - run: sudo apt-get update && sudo apt-get install -y ffmpeg imagemagick shellcheck
-      - run: npm ci
-        working-directory: vicinae
+      - run: ./install.sh --build-only
       - run: npm audit --audit-level=high
         working-directory: vicinae
       - run: npm test && npm run lint && npx tsc --noEmit
         working-directory: vicinae
       - run: shellcheck -x -P . ./*.sh examples/matugen/post-apply.sh
-      - run: npm run bundle && npx vici build --out ../release/extension
-        working-directory: vicinae
       - run: python3 scripts/prepare-release.py

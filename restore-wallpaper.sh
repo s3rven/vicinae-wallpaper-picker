@@ -8,8 +8,8 @@ script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" 2>/dev/null && pwd -P)
 
 state_dir="${XDG_STATE_HOME:-$HOME/.local/state}"
 apply_lock=${WALLPAPER_PICKER_LOCK:-"$state_dir/wallpaper-picker/apply.lock"}
-# Login and hotplug restores must read committed picker state, never Matugen's
-# temporary thumbnail/Null output during an apply. Read fit after this lock too.
+# Login and hotplug restores must read committed picker state after an apply
+# finishes. Read fit after this lock too.
 mkdir -p -- "${apply_lock%/*}" || exit 1
 exec 9>"$apply_lock"
 flock -w 20 9 || exit 1

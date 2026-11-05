@@ -51,10 +51,22 @@ class Installer(unittest.TestCase):
         self.assertIn(["npx", "--no-install", "vici", "build", "--out", str(self.home / "bundle output")], self.calls())
 
     def test_invalid_arguments_do_not_install(self):
-        for args in [("--output",), ("--unknown",)]:
+        for args in [("--output",), ("--output", "--check"), ("--unknown",),
+                     ("--check", "--build-only"), ("--build-only", "--check"),
+                     ("--check", "--output", "out"), ("--output", "out", "--check")]:
             with self.subTest(args=args):
                 self.assertEqual(self.run_install(*args).returncode, 2)
         self.assertFalse(self.trace.exists())
+
+    def test_build_only_does_not_require_desktop_tools(self):
+        for tool in ('awww', 'awww-daemon', 'flock', 'realpath', 'sha1sum', 'find', 'sort', 'timeout'):
+            (self.bin / tool).unlink()
+        for tool in ('dirname', 'uname'):
+            (self.bin / tool).symlink_to(shutil.which(tool))
+        self.env['PATH'] = str(self.bin)
+        result = self.run_install('--build-only')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(['npm', 'ci', '--no-audit', '--no-fund'], self.calls())
 
     def test_missing_dependencies_do_not_trigger_package_installs(self):
         (self.bin / 'npm').unlink()

@@ -26,6 +26,10 @@ esac
     printf 'Wallpaper folder not found: %s\n' "$dir" >&2
     exit 1
 }
+if [ ! -r "$dir" ] || [ ! -x "$dir" ]; then
+    printf 'Wallpaper folder is not readable: %s\n' "$dir" >&2
+    exit 1
+fi
 # Stable absolute paths keep folder labels, metadata and thumbnail keys the
 # same for relative paths, symlinked folders and a trailing slash preference.
 dir=$(cd -- "$dir" && pwd -P) || exit 1

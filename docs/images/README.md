@@ -1,6 +1,6 @@
 # Showcase images
 
-`wallpaper-picker-hero.png` is the approved blue-wallpaper showcase used at the
+`wallpaper-picker-hero.png` is the blue-wallpaper showcase used at the
 top of the project README. It presents the picker on a black background with a
 subtle perspective effect.
 

@@ -21,6 +21,7 @@
     "scripts/prepare-release.py",
     "scripts/release-manifest.json",
     "tests/test_live.py",
+    "tests/test_import.py",
     "tests/test_pipeline.py",
     "tests/test_release.py",
     "tests/test_scan.py",
