@@ -1,5 +1,7 @@
 # Vicinae Wallpaper Picker
 
+![Wallpaper Picker for Vicinae, showcasing a library of blue wallpapers](docs/images/wallpaper-picker-hero.png)
+
 Browse and switch wallpapers from [Vicinae](https://vicinae.com). A thumbnail
 grid for still images and live wallpapers, with favourites, collections, colour
 filters and animated transitions through [awww](https://codeberg.org/LGFae/awww).
