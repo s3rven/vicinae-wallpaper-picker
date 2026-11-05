@@ -1,0 +1,43 @@
+{
+  "backend": [
+    "apply-wallpaper.sh",
+    "awww-lib.sh",
+    "image-lib.sh",
+    "import-live.sh",
+    "live-wallpaper.py",
+    "restore-wallpaper.sh",
+    "scan-wallpapers.sh"
+  ],
+  "source": [
+    ".github/workflows/checks.yml",
+    ".gitignore",
+    "LICENSE",
+    "README.md",
+    "RELEASING.md",
+    "examples/env.example",
+    "scripts/prepare-release.py",
+    "scripts/release-manifest.json",
+    "tests/test_live.py",
+    "tests/test_pipeline.py",
+    "tests/test_release.py",
+    "tests/test_scan.py",
+    "vicinae/.gitignore",
+    "vicinae/assets/icon.png",
+    "vicinae/package.json",
+    "vicinae/package-lock.json",
+    "vicinae/tsconfig.json",
+    "vicinae/scripts/bundle-backend.mjs",
+    "vicinae/scripts/test-lib.mjs",
+    "vicinae/src/lib.ts",
+    "vicinae/src/previous-wallpaper.ts",
+    "vicinae/src/random-wallpaper.ts",
+    "vicinae/src/set-wallpaper.tsx",
+    "vicinae/src/toggle-live-wallpaper.ts",
+    "install.sh",
+    "examples/matugen/README.md",
+    "examples/matugen/config.toml",
+    "examples/matugen/kitty-colors.conf",
+    "examples/matugen/post-apply.sh",
+    "tests/test_install.py"
+  ]
+}

@@ -3,3 +3,4 @@ dist/
 *.vicinae
 .test-lib-*
 assets/backend/
+assets/.backend-*/

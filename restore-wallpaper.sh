@@ -13,11 +13,11 @@ apply_lock=${WALLPAPER_PICKER_LOCK:-"$state_dir/wallpaper-picker/apply.lock"}
 mkdir -p -- "${apply_lock%/*}" || exit 1
 exec 9>"$apply_lock"
 flock -w 20 9 || exit 1
-wallpaper_state="${WALLPAPER_STATE_FILE:-$state_dir/theme/generated/wallpaper/path.txt}"
-wallpaper_link=${WALLPAPER_LINK_FILE:-"${wallpaper_state%/*}/current"}
+wallpaper_state="${WALLPAPER_STATE_FILE:-$state_dir/wallpaper-picker/current}"
+wallpaper_link=${WALLPAPER_LINK_FILE:-"$state_dir/wallpaper-picker/current-image"}
 fit_state=${WALLPAPER_PICKER_FIT_STATE:-"$state_dir/wallpaper-picker/fit"}
 
-# apply-wallpaper-theme.sh writes this alongside wallpaper_state whenever the
+# apply-wallpaper.sh writes this alongside wallpaper_state whenever the
 # picker applies a wallpaper, so a restore at login or on monitor hotplug uses
 # whatever fit the user actually picked instead of silently reverting to
 # crop/CatmullRom/center. Same validation as the apply script, since this file
@@ -35,7 +35,7 @@ fi
 if [ -n "$wallpaper" ] && [ -f "$wallpaper" ]; then
     # Self-heal the stable full-resolution path on login or after restoring a
     # state directory on another machine.
-    ln -sfnT -- "$wallpaper" "$wallpaper_link"
+    ln -sfnT -- "$(still_for "$wallpaper")" "$wallpaper_link"
     # Hyprland can announce a ready monitor before awww has registered its
     # output. Retry briefly instead of immediately replaying an older cache.
     for _attempt in {1..20}; do

@@ -1,51 +1,41 @@
-import { Cache, environment } from "@vicinae/api";
+import { Cache, environment, getPreferenceValues } from "@vicinae/api";
 import { execFile, spawn } from "node:child_process";
 import { accessSync, constants, existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, dirname, join, relative } from "node:path";
+import { basename, dirname, join, relative, resolve } from "node:path";
 import { promisify } from "node:util";
-import { pathToFileURL } from "node:url";
 
 const run = promisify(execFile);
 
-// The shell pipeline is the part worth keeping. scan-wallpapers.sh already walks
-// the library, maintains the 800x500 thumbnail cache and the dominant-colour
-// cache, and apply-wallpaper-theme.sh already owns the matugen run, the awww
-// transition and the neutral-mode switch. Reimplementing any of that in
-// TypeScript would be a second source of truth for behaviour that is already
-// correct — the extension is a new *front end*, not a new backend.
-//
-// `npm run build` bundles the scripts into the extension's assets, so an
-// installed extension is self-contained. WALLPAPER_PICKER_DIR points it at a
-// checkout instead. Resolved per call: `environment` only exists in the host.
+// Installed scripts are bundled; this override is useful for local development.
 const script = (name: string) =>
-  join(process.env.WALLPAPER_PICKER_DIR ?? join(environment.assetsPath, "backend"), name);
+  join(process.env.WALLPAPER_PICKER_DIR || join(environment.assetsPath, "backend"), name);
 
 // Run through bash rather than exec'ing the file, so a bundler that drops the
 // executable bit cannot break the extension.
 const runScript = (name: string, args: string[], maxBuffer: number, env?: NodeJS.ProcessEnv) =>
-  run("bash", [script(name), ...args], { maxBuffer, env });
+  run("bash", [script(name), ...args], { maxBuffer, env, timeout: 45_000 });
 
 const onPath = (cmd: string) =>
   (process.env.PATH ?? "").split(":").some((dir) => {
     try {
       accessSync(join(dir, cmd), constants.X_OK);
-      return true;
+      return statSync(join(dir, cmd)).isFile();
     } catch {
       return false;
     }
   });
 
-// Hard requirements of the shell backend; anything else (jq, kitty, hyprctl,
-// notify-send) is optional and skipped when absent. Checked up front because an
-// apply runs detached and its failures would otherwise be silent.
-export function missingTools(): string[] {
-  const need = [["awww"], ["matugen"], ["magick", "convert"], ["flock"]];
+// ImageMagick improves thumbnails/colour filters; it is optional for stills.
+export function missingTools(options: { path?: string } = {}): string[] {
+  const need = [["bash"], ["awww"], ["flock"]];
+  if (options.path && isLive(options.path)) need.push(["ffmpeg"], ["mpvpaper"], ["python3"], ["systemctl"], ["systemd-run"]);
   return need.filter((alternatives) => !alternatives.some(onPath)).map((alternatives) => alternatives.join(" or "));
 }
 
 export function libraryDirectory(directory?: string): string {
-  return directory || process.env.WALLPAPER_DIR || join(homedir(), "Pictures", "wallpaper");
+  const wanted = directory || process.env.WALLPAPER_DIR || join(homedir(), "Pictures", "wallpaper");
+  return resolve(wanted === "~" ? homedir() : wanted.startsWith("~/") ? join(homedir(), wanted.slice(2)) : wanted);
 }
 
 export type Wallpaper = {
@@ -58,13 +48,14 @@ export type Wallpaper = {
   mtime: number;
   // Derived once, at scan time, not in the filters.
   //
-  // Both of these were recomputed inside render: groupOf ran in the colour-rail
+  // The group used to be recomputed inside render: groupOf ran in the colour-rail
   // memo, again in the visible-list memo on every filter change, and again per
   // tile to build its search keywords — roughly 350 hex parses per keystroke on
   // a 115-wallpaper library, to answer a question whose input never changes.
   // Parsing each colour once here makes the filters plain field comparisons.
   group: string;
-  hue: number;
+  // Mean lightness 0-100 from the scanner, -1 while its colour pass is pending.
+  brightness: number;
   title: string;
   tags: string[];
   source: string;
@@ -102,19 +93,13 @@ export function filterLibrary(items: Wallpaper[], filter: string, favourites: Se
   if (filter === "archive") return items.filter(isArchived);
   if (filter.startsWith("f:")) return items.filter((w) => w.folder === filter.slice(2));
   const active = items.filter((w) => !isArchived(w));
+  if (filter === "live") return active.filter((w) => isLive(w.path));
+  if (filter === "stills") return active.filter((w) => !isLive(w.path));
   return filter.startsWith("c:") ? active.filter((w) => w.group === filter.slice(2)) : active;
 }
 
-export type Scheme = {
-  index: number;
-  source: string;
-  primary: string;
-  tertiary: string;
-  surface: string;
-};
-
 // scan-wallpapers.sh emits one tab-separated record per wallpaper:
-//   path \t name \t thumb \t current \t color \t folder \t mtime
+//   path \t name \t thumb \t current \t color \t folder \t mtime \t brightness
 // Fields past the second are optional in older output, so every read past
 // parts[1] is defensive rather than assumed.
 export type ScanOptions = {
@@ -130,6 +115,7 @@ export async function scanWallpapers(options: ScanOptions = {}): Promise<Wallpap
   const env = { ...process.env };
   const wanted = libraryDirectory(options.directory);
   if (!existsSync(wanted)) throw new Error(`Wallpaper folder not found: ${wanted}`);
+  if (!statSync(wanted).isDirectory()) throw new Error(`Choose a wallpaper folder, not a file: ${wanted}`);
   const directory = realpathSync(wanted);
   env.WALLPAPER_DIR = directory;
   if (options.depth) env.WALLPAPER_SCAN_DEPTH = options.depth;
@@ -137,7 +123,7 @@ export async function scanWallpapers(options: ScanOptions = {}): Promise<Wallpap
     env.WALLPAPER_INCLUDE_CURRENT = options.includeCurrent ? "1" : "0";
   }
   if (options.cacheOnly) env.WALLPAPER_PICKER_CACHE_ONLY = "1";
-  const { stdout } = await runScript("scan-wallpapers.sh", [], 32 * 1024 * 1024, env);
+  const { stdout } = await runScript("scan-wallpapers.sh", [directory], 32 * 1024 * 1024, env);
   let metadata: Record<string, WallpaperMetadata> = {};
   try { metadata = parseLibraryMetadata(readFileSync(join(directory, ".wallpaper-library.json"), "utf8")); } catch { /* optional catalogue */ }
   const out: Wallpaper[] = [];
@@ -145,7 +131,7 @@ export async function scanWallpapers(options: ScanOptions = {}): Promise<Wallpap
     if (!line) continue;
     const p = line.split("\t");
     if (p.length < 2 || !p[0]) continue;
-    const color = p[4]?.trim() ?? "";
+    const color = normaliseHex(p[4] ?? "") ?? "";
     const details = metadata[relative(directory, p[0])];
     out.push({
       path: p[0],
@@ -159,7 +145,7 @@ export async function scanWallpapers(options: ScanOptions = {}): Promise<Wallpap
       // the same fallback the colour sections use so the dropdown, sections and
       // search keywords never disagree about where that wallpaper belongs.
       group: groupOf(color) || "neutral",
-      hue: hueOf(color),
+      brightness: /^\d{1,3}$/.test(p[7]?.trim() ?? "") ? Number(p[7]) : -1,
       title: details?.title || readableName(p[1]) || "",
       tags: details?.tags ?? [],
       source: details?.source || (/^wallhaven-[a-z0-9]{6}\./i.test(basename(p[0]))
@@ -168,39 +154,6 @@ export async function scanWallpapers(options: ScanOptions = {}): Promise<Wallpap
     });
   }
   return out;
-}
-
-// scan-colors.sh prints: index source primary tertiary surface
-export async function scanSchemes(wallpaper: string): Promise<Scheme[]> {
-  const { stdout } = await runScript("scan-colors.sh", [wallpaper], 4 * 1024 * 1024);
-  const out = new Map<number, Scheme>();
-  for (const line of stdout.split("\n")) {
-    const p = line.trim().split(/\s+/);
-    if (p.length < 5) continue;
-    const index = Number.parseInt(p[0], 10);
-    const source = matugenHex(p[1]);
-    const primary = matugenHex(p[2]);
-    const tertiary = matugenHex(p[3]);
-    const surface = matugenHex(p[4]);
-    if (!Number.isInteger(index) || index < 0 || index > 3 || !source || !primary || !tertiary || !surface) {
-      continue;
-    }
-    out.set(index, {
-      index,
-      source,
-      primary,
-      tertiary,
-      surface,
-    });
-  }
-  // Hue order, so a wallpaper's palettes appear in a stable, predictable order
-  // rather than in extraction order.
-  const distinct = new Map<string, Scheme>();
-  for (const scheme of out.values()) {
-    const key = `${scheme.primary}:${scheme.tertiary}:${scheme.surface}`;
-    if (!distinct.has(key) || scheme.index === 0) distinct.set(key, scheme);
-  }
-  return [...distinct.values()].sort((a, b) => hueOf(a.primary) - hueOf(b.primary));
 }
 
 export function hueOf(hex: string): number {
@@ -220,29 +173,7 @@ export function hueOf(hex: string): number {
   return h < 0 ? h + 360 : h;
 }
 
-// Detached on purpose. The apply takes seconds (matugen, then the awww
-// transition) and holds a lock; keeping the extension process attached to it
-// would block the launcher on work whose result it never reads.
-//
-// The shell's fourth argument is CUSTOM_ACCENT, and it is positional, so the
-// transition occupies the third argument even when no accent is supplied.
-// Passing an accent switches
-// apply-wallpaper-theme.sh from `matugen image --source-color-index` to
-// `matugen color hex`, and makes the script pin the accent in its own state
-// file; omitting it makes the script CLEAR that pin. That is why this signature
-// takes the accent rather than the extension writing the state file itself:
-// set and clear are the same code path on the backend and must stay that way.
-// Returns false when there is nothing to apply, so the caller can say so.
-//
-// Detaching with stdio ignored is what makes the apply asynchronous, and it is
-// also what makes every one of its failures invisible: the script's "Wallpaper
-// not found" goes to a closed descriptor, the window has already been asked to
-// close, and the desktop simply does not change. The grid can genuinely offer a
-// file that is gone - it paints from the cache above before the rescan lands,
-// and the library is a directory someone prunes by hand - so check the one
-// failure the extension can actually predict, and leave the rest detached.
 export type ApplyOptions = {
-  wallpaperOnly?: boolean;
   transition?: string;
   duration?: string;
   fps?: string;
@@ -257,11 +188,9 @@ export type ApplyOptions = {
 
 export function applyWallpaper(
   path: string,
-  schemeIndex: number,
-  customAccent?: string,
   options: ApplyOptions = {},
 ): boolean {
-  const applyScript = script("apply-wallpaper-theme.sh");
+  const applyScript = script("apply-wallpaper.sh");
   if (!existsSync(path) || !existsSync(applyScript)) return false;
   try {
     if (!statSync(path).isFile() || !statSync(applyScript).isFile()) return false;
@@ -272,15 +201,10 @@ export function applyWallpaper(
   }
   const args = [
     path,
-    String(schemeIndex),
     process.env.WALLPAPER_PICKER_TRANSITION ?? options.transition ?? "spotlight-wave",
   ];
-  if (customAccent) args.push(customAccent);
   const env = { ...process.env };
   env.WALLPAPER_PICKER_LOG = "1";
-  if (options.wallpaperOnly !== undefined) {
-    env.WALLPAPER_PICKER_WALLPAPER_ONLY = options.wallpaperOnly ? "1" : "0";
-  }
   const setPreference = (name: string, value?: string) => {
     // Explicit environment variables stay a power-user override for scripts
     // and machine-wide defaults. "auto" means leave the backend's detection
@@ -313,50 +237,17 @@ export function applyWallpaper(
   }
 }
 
-export function wallpaperPreviewMarkdown(wallpaper: Pick<Wallpaper, "thumb">): string {
-  // URL encoding preserves spaces, # and non-ASCII filenames in Markdown.
-  const url = pathToFileURL(wallpaper.thumb).href.replace(/\(/g, "%28").replace(/\)/g, "%29");
-  return `![Wallpaper preview](${url})`;
-}
-
-// One hand-picked colour, run through the same extractor the wallpaper palettes
-// come from, so the preview cell and the eventual apply cannot disagree.
-//
-// scan-colors.sh --color reports index -1, which is how a custom scheme is told
-// apart from the 0-3 the image yields.
-export const CUSTOM_INDEX = -1;
-
-export async function scanCustomScheme(hex: string): Promise<Scheme | null> {
-  const { stdout } = await runScript("scan-colors.sh", ["--color", hex], 1024 * 1024);
-  const p = stdout.trim().split(/\s+/);
-  if (p.length < 5) return null;
-  const source = matugenHex(p[1]);
-  const primary = matugenHex(p[2]);
-  const tertiary = matugenHex(p[3]);
-  const surface = matugenHex(p[4]);
-  if (!source || !primary || !tertiary || !surface) return null;
+// What the no-view commands need from the extension preferences. The dropdowns
+// only offer valid values and the backend validates them again.
+export function commandOptions(): { scan: ScanOptions; apply: ApplyOptions } {
+  const p = getPreferenceValues<Record<string, string | boolean | undefined>>();
+  const text = (key: string) => typeof p[key] === "string" ? p[key] as string : undefined;
   return {
-    index: CUSTOM_INDEX,
-    source,
-    primary,
-    tertiary,
-    surface,
+    scan: { directory: text("wallpaperDirectory")?.trim() || undefined, depth: text("scanDepth"), includeCurrent: p.includeCurrent !== false },
+    apply: { transition: text("transition"), duration: text("transitionDuration"), resize: text("resizeMode"), cropGravity: text("cropGravity") },
   };
 }
 
-// Matugen may emit an alpha suffix. The picker only uses opaque theme roles,
-// so trim valid #RRGGBBAA output to the same canonical #rrggbb shape as typed
-// accents and reject anything else at the process boundary.
-function matugenHex(raw: string): string | null {
-  const value = raw.trim();
-  if (!/^#[0-9a-fA-F]{6}(?:[0-9a-fA-F]{2})?$/.test(value)) return null;
-  return value.slice(0, 7).toLowerCase();
-}
-
-// Accepts what a person actually types: with or without the hash, three digits
-// or six, any case. Returns the canonical form the shell scripts validate
-// against, or null - which is also the "not a colour, do nothing" signal for
-// the palette step's search bar.
 export function normaliseHex(raw: string): string | null {
   const t = raw.trim().replace(/^#/, "");
   if (/^[0-9a-fA-F]{6}$/.test(t)) return `#${t.toLowerCase()}`;
@@ -407,56 +298,12 @@ export function lightnessOf(hex: string): number {
   return (Math.max(r, g, b) + Math.min(r, g, b)) / 2;
 }
 
-const SHADE_WORDS: Record<number, string[]> = {
-  2: ["Deep", "Light"],
-  3: ["Deep", "Mid", "Light"],
-  4: ["Deepest", "Deep", "Light", "Lightest"],
-};
-
-// Names a whole set of palettes at once, so that two of them can never arrive
-// with the same title.
-//
-// nameOf buckets by hue, and one image routinely yields several palettes from
-// the same family - often two cells reading "Blue", separable only by the hex
-// underneath. The swatch does distinguish them, but
-// the title is the largest text in the cell and on those wallpapers it is the
-// one part carrying no information.
-//
-// Qualified only where it has to be. A set with no collision keeps its plain
-// names, so the common case is still "Blue", "Teal", "Neutral" and the extra
-// word shows up exactly when it is telling you something. Ordered by lightness
-// because within one hue that is what actually differs - matugen's primaries
-// for a dark scheme sit at the same chroma and vary by tone.
-export function nameSchemes(hexes: string[]): string[] {
-  const names = hexes.map(nameOf);
-  const positions = new Map<string, number[]>();
-  names.forEach((name, index) => {
-    const seen = positions.get(name) ?? [];
-    seen.push(index);
-    positions.set(name, seen);
-  });
-
-  const out = [...names];
-  for (const [name, indices] of positions) {
-    const words = SHADE_WORDS[indices.length];
-    // One of a hue needs no qualifier, and beyond four there is no vocabulary
-    // worth inventing - the hex subtitle is a better answer than "Deepester".
-    if (!words) continue;
-    [...indices]
-      .sort((a, b) => lightnessOf(hexes[a]) - lightnessOf(hexes[b]))
-      .forEach((position, rank) => {
-        out[position] = `${words[rank]} ${name}`;
-      });
-  }
-  return out;
-}
-
 // The extension is the one part of a filename nobody reads: every entry is an
 // image, so ".jpg" is four characters of noise on names - "wallhaven-k8d8xq", "139396752_p0" -
 // that are already hard enough to scan. The full filename stays in the tile's
 // tooltip and in its search keywords, so nothing becomes unfindable.
 export function prettyName(name: string): string {
-  return name.replace(/\.(jpe?g|png|webp)$/i, "");
+  return name.replace(/\.(jpe?g|png|webp|mp4|webm|mkv)$/i, "");
 }
 
 export function displayName(name: string, showExtensions: boolean): string {
@@ -482,91 +329,6 @@ export function readableName(name: string): string | null {
   return base.replace(/[-_]+/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
-// ---- accent picker ---------------------------------------------------------
-//
-// Pinning your own accent used to mean typing a hex into the palette step's
-// search bar, which only works if you already know the number you want. The
-// picker offers a wheel of named seeds instead, each shown as the solid primary
-// colour matugen actually derives from it, and still takes a typed hex -
-// or now a colour name - for anything off the wheel.
-//
-// Seeds are computed from hue angles rather than listed as hexes: they are only
-// matugen inputs, never colours anything is painted with, and one saturation /
-// lightness for the whole wheel keeps every step equally strong. The names are
-// the ones people reach for, spaced so neighbours still look different once
-// matugen has turned them into a dark-theme primary.
-export type AccentSeed = { name: string; seed: string; neutral: boolean };
-
-function hslHex(h: number, s: number, l: number): string {
-  const a = s * Math.min(l, 1 - l);
-  const f = (n: number) => {
-    const k = (n + h / 30) % 12;
-    const v = l - a * Math.max(-1, Math.min(k - 3, 9 - k, 1));
-    return Math.round(v * 255).toString(16).padStart(2, "0");
-  };
-  return `#${f(0)}${f(8)}${f(4)}`;
-}
-
-const WHEEL: [string, number][] = [
-  ["Red", 0], ["Orange", 28], ["Yellow", 52], ["Green", 120], ["Teal", 172],
-  ["Sky", 202], ["Blue", 218], ["Violet", 256], ["Pink", 324],
-];
-
-// Low-chroma seeds give the quiet, almost-grey accents a colour wheel cannot:
-// a cool silver, a warm stone, a blue-grey slate.
-const NEUTRALS: [string, number, number, number][] = [
-  ["Silver", 220, 0.06, 0.8],
-  ["Stone", 32, 0.1, 0.62],
-  ["Slate", 214, 0.16, 0.55],
-];
-
-export const ACCENT_SEEDS: AccentSeed[] = [
-  // Muted inputs retain distinct hues under scheme-fidelity without turning
-  // every accent into a neon colour. Previews still use matugen's output.
-  ...WHEEL.map(([name, h]) => ({ name, seed: hslHex(h, 0.32, 0.52), neutral: false })),
-  ...NEUTRALS.map(([name, h, sat, l]) => ({ name, seed: hslHex(h, sat, l), neutral: true })),
-];
-
-// A hex in any of the forms normaliseHex takes, or one of the seed names above
-// ("teal", "Rose"). Returns the seed to hand matugen, or null.
-export function parseColour(raw: string): string | null {
-  const hex = normaliseHex(raw);
-  if (hex) return hex;
-  const want = raw.trim().toLowerCase();
-  if (want.length < 3) return null;
-  const aliases: Record<string, string> = {
-    grey: "silver", gray: "silver", rose: "pink", sage: "green",
-    amber: "orange", purple: "violet", lavender: "violet", cyan: "teal", "sky blue": "sky",
-  };
-  return ACCENT_SEEDS.find((a) => a.name.toLowerCase() === (aliases[want] ?? want))?.seed ?? null;
-}
-
-// scanCustomScheme, remembered. A seed always derives the same scheme.
-const accentCache = new Cache({ namespace: "accents" });
-
-export async function accentScheme(seed: string): Promise<Scheme | null> {
-  const key = `v1:${seed.toLowerCase()}`;
-  try {
-    const hit = accentCache.get(key);
-    if (hit) return JSON.parse(hit) as Scheme;
-  } catch {
-    /* a bad entry is a miss */
-  }
-  const s = await scanCustomScheme(seed).catch(() => null);
-  if (s) {
-    try {
-      accentCache.set(key, JSON.stringify(s));
-    } catch {
-      /* the cache is an optimisation */
-    }
-  }
-  return s;
-}
-
-// How strongly a colour reads as the hue it is filed under: chroma, weighted by
-// how much light there is to carry it. The colour rail uses this to pick one
-// swatch to stand for a whole family - its most saturated member looks like
-// what the label says, where the family's average would look like mud.
 export function vividnessOf(hex: string): number {
   const rgb = rgbOf(hex);
   if (!rgb) return -1;
@@ -577,19 +339,14 @@ export function vividnessOf(hex: string): number {
 
 // ---- persisted state -------------------------------------------------------
 //
-// Favourites and neutral mode are plain state files under XDG_STATE_HOME. The
-// shell pipeline reads the neutral marker too (apply-wallpaper-theme.sh checks
-// it), so a second source of truth would silently disagree with the thing that
-// actually themes the desktop.
+// Favourites are stored locally under XDG_STATE_HOME.
 
 
 const STATE_DIR =
-  process.env.XDG_STATE_HOME ?? join(homedir(), ".local", "state");
+  process.env.XDG_STATE_HOME || join(homedir(), ".local", "state");
 
 export const FAVOURITES_FILE =
-  process.env.WALLPAPER_PICKER_FAVOURITES ?? join(STATE_DIR, "wallpaper-picker", "favourites");
-export const NEUTRAL_FILE =
-  process.env.WALLPAPER_PICKER_NEUTRAL ?? join(STATE_DIR, "wallpaper-picker", "neutral-mode");
+  process.env.WALLPAPER_PICKER_FAVOURITES || join(STATE_DIR, "wallpaper-picker", "favourites");
 
 export function readFavourites(): Set<string> {
   try {
@@ -609,8 +366,8 @@ export function writeFavourites(paths: Set<string>): boolean {
   // outright, and a half-written list drops stars silently rather than loudly.
   const tmp = `${FAVOURITES_FILE}.${process.pid}`;
   try {
-    mkdirSync(dirname(FAVOURITES_FILE), { recursive: true });
-    writeFileSync(tmp, [...paths].join("\n") + (paths.size ? "\n" : ""));
+    mkdirSync(dirname(FAVOURITES_FILE), { recursive: true, mode: 0o700 });
+    writeFileSync(tmp, [...paths].join("\n") + (paths.size ? "\n" : ""), { mode: 0o600 });
     renameSync(tmp, FAVOURITES_FILE);
     return true;
   } catch {
@@ -623,94 +380,45 @@ export function writeFavourites(paths: Set<string>): boolean {
   }
 }
 
-// What the desktop is wearing right now.
+// The previous command swaps between the last two successfully applied images.
+export function readPrevious(): string | null {
+  try {
+    return readFileSync(process.env.WALLPAPER_PICKER_PREVIOUS || join(STATE_DIR, "wallpaper-picker", "previous"), "utf8").split("\n")[0] || null;
+  } catch { return null; }
+}
+
+// --- live wallpapers ----------------------------------------------------------
 //
-// Two separate questions, deliberately kept apart. colors.json is matugen's own
-// output - the single file every template renders from - so its `primary` is
-// the accent actually on screen no matter how it got there. The custom-accent
-// state file only answers whether that accent was PINNED by hand, which is the
-// half that decides whether re-applying should keep the pin or drop back to the
-// image. Reading the pin from the palette instead would be a guess: a wallpaper
-// can legitimately extract to the same colour someone once typed.
-export const GENERATED_COLORS =
-  process.env.WALLPAPER_PICKER_GENERATED_COLORS ??
-  join(STATE_DIR, "theme", "generated", "colors.json");
+// live-wallpaper.py owns the player and its state files; the extension only
+// asks it, so a keybind, the picker and a login restore can never disagree.
+export type LivePolicy = "never" | "covered" | "windows";
+export type LiveStatus = { running: boolean; paused: boolean; policy: LivePolicy };
 
-export const CUSTOM_ACCENT_FILE =
-  process.env.WALLPAPER_PICKER_CUSTOM_ACCENT ??
-  join(STATE_DIR, "wallpaper-picker", "custom-accent");
+export const LIVE_POLICIES: { id: LivePolicy; title: string }[] = [
+  { id: "never", title: "Never" },
+  { id: "covered", title: "A Window Is Fullscreen or Maximized" },
+  { id: "windows", title: "Any Window Is Open" },
+];
 
-const SAVED_ACCENTS_FILE = join(STATE_DIR, "wallpaper-picker", "saved-accents.json");
-export type SavedAccent = { seed: string; name: string };
-
-export function readSavedAccents(): SavedAccent[] {
-  try {
-    const parsed: unknown = JSON.parse(readFileSync(SAVED_ACCENTS_FILE, "utf8"));
-    if (!Array.isArray(parsed)) return [];
-    const accents = new Map<string, SavedAccent>();
-    for (const item of parsed) {
-      const seed = typeof item?.seed === "string" ? normaliseHex(item.seed) : null;
-      if (seed) accents.set(seed, { seed, name: typeof item.name === "string" && item.name.trim() ? item.name.trim() : nameOf(seed) });
-    }
-    return [...accents.values()];
-  } catch { return []; }
+export function isLive(path: string): boolean {
+  return /\.(mp4|webm|mkv)$/i.test(path);
 }
 
-export function writeSavedAccents(accents: SavedAccent[]): boolean {
-  const tmp = `${SAVED_ACCENTS_FILE}.${process.pid}.tmp`;
+const runLive = (args: string[]) => run("python3", [script("live-wallpaper.py"), ...args], { maxBuffer: 64 * 1024 });
+
+export async function liveStatus(): Promise<LiveStatus | null> {
   try {
-    mkdirSync(dirname(SAVED_ACCENTS_FILE), { recursive: true });
-    writeFileSync(tmp, JSON.stringify(accents));
-    renameSync(tmp, SAVED_ACCENTS_FILE);
-    return true;
+    return JSON.parse((await runLive(["status"])).stdout) as LiveStatus;
   } catch {
-    try { rmSync(tmp, { force: true }); } catch { /* preserve original error */ }
-    return false;
+    return null;
   }
 }
 
-export function readAppliedPrimary(): string {
+// pause | resume | toggle, or ["policy", id]. Takes effect immediately on a
+// running player and on the next one otherwise.
+export async function liveControl(...args: string[]): Promise<boolean> {
   try {
-    const parsed: unknown = JSON.parse(readFileSync(GENERATED_COLORS, "utf8"));
-    const primary = (parsed as Record<string, unknown>)?.primary;
-    return typeof primary === "string" ? (matugenHex(primary) ?? "") : "";
-  } catch {
-    // No theme generated yet, or a half-written file mid-apply. Nothing gets
-    // marked current, which is the correct answer rather than a crash.
-    return "";
-  }
-}
-
-export function readCustomAccent(): string {
-  try {
-    return normaliseHex(readFileSync(CUSTOM_ACCENT_FILE, "utf8")) ?? "";
-  } catch {
-    return "";
-  }
-}
-
-export function clearCustomAccent(): boolean {
-  try {
-    rmSync(CUSTOM_ACCENT_FILE, { force: true });
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-// Presence is the flag; there is no file format for a boolean.
-export function readNeutral(): boolean {
-  return existsSync(NEUTRAL_FILE);
-}
-
-export function writeNeutral(on: boolean): boolean {
-  try {
-    if (on) {
-      mkdirSync(dirname(NEUTRAL_FILE), { recursive: true });
-      writeFileSync(NEUTRAL_FILE, "");
-    } else {
-      rmSync(NEUTRAL_FILE, { force: true });
-    }
+    await runLive(args);
     return true;
   } catch {
     return false;
@@ -745,6 +453,41 @@ export function groupOf(hex: string): string {
   return BANDS.find(([, from, to]) => h >= from && h < to)?.[0] ?? "red";
 }
 
+// The colour sort. A plain hue sort reads as a shuffle on a dark library: one
+// hue holds a pale sky next to a near-black night, and the greys came out in
+// filename order. Instead, colour families in rainbow order (the same families
+// as the dropdown and the sections), each one light to dark, greys last.
+export function colourOrder(a: Wallpaper, b: Wallpaper): number {
+  const rank = (w: Wallpaper) => COLOR_GROUPS.indexOf(w.group as (typeof COLOR_GROUPS)[number]);
+  return rank(a) - rank(b) || b.brightness - a.brightness || a.name.localeCompare(b.name);
+}
+
+// Where the picker was left: the dropdown filter and the sort. Restored on the
+// next open, so "Live" or "Blue" stays picked until it is changed.
+const viewCache = new Cache({ namespace: "view" });
+export type View = { filter: string; sort: string };
+
+export function readView(): Partial<View> {
+  try {
+    const parsed: unknown = JSON.parse(viewCache.get("v1") ?? "{}");
+    const view = parsed as Record<string, unknown>;
+    return {
+      filter: typeof view?.filter === "string" ? view.filter : undefined,
+      sort: typeof view?.sort === "string" ? view.sort : undefined,
+    };
+  } catch {
+    return {};
+  }
+}
+
+export function writeView(view: View): void {
+  try {
+    viewCache.set("v1", JSON.stringify(view));
+  } catch {
+    /* losing the remembered view is not an error */
+  }
+}
+
 // ---- library cache ---------------------------------------------------------
 
 
@@ -761,7 +504,7 @@ const cache = new Cache({ namespace: "library", ttl: 5 * 60 * 1000 });
 // tenth of a second later - but until it lands the colour rail is empty and
 // the colour filter matches nothing, which reads as the feature being broken.
 // Bump this whenever a field is added to Wallpaper.
-const KEY = "wallpapers.v3";
+const KEY = "wallpapers.v4";
 
 type CachedLibrary = {
   scope: Required<Pick<ScanOptions, "depth" | "includeCurrent">> & Pick<ScanOptions, "directory">;
@@ -770,8 +513,8 @@ type CachedLibrary = {
 
 function scanScope(options: ScanOptions) {
   return {
-    directory: options.directory ?? "",
-    depth: options.depth ?? "2",
+    directory: libraryDirectory(options.directory),
+    depth: options.depth ?? "3",
     includeCurrent: options.includeCurrent ?? true,
   };
 }
@@ -794,8 +537,8 @@ function isWallpaper(value: unknown): value is Wallpaper {
     typeof item.resolution === "string" &&
     typeof item.mtime === "number" &&
     Number.isFinite(item.mtime) &&
-    typeof item.hue === "number" &&
-    Number.isFinite(item.hue)
+    typeof item.brightness === "number" &&
+    Number.isFinite(item.brightness)
   );
 }
 

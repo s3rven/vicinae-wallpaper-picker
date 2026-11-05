@@ -2,19 +2,64 @@
   "$schema": "https://vicinae.com/schemas/extension.json",
   "name": "wallpaper-picker",
   "title": "Wallpaper Picker",
-  "description": "Browse the wallpaper library and apply it with a matugen theme.",
+  "description": "Browse, favourite and switch still or live wallpapers on a Wayland desktop.",
   "icon": "icon.png",
-  "author": "silent",
-  "categories": ["Design Tools"],
+  "author": "s3rven",
+  "categories": [
+    "Design Tools"
+  ],
   "license": "MIT",
   "commands": [
     {
       "name": "set-wallpaper",
       "title": "Set Wallpaper",
       "subtitle": "Wallpaper Picker",
-      "description": "Browse wallpapers, then choose a palette to theme the desktop with.",
-      "keywords": ["wallpaper", "background", "theme", "matugen"],
+      "description": "Browse a thumbnail grid and set a still or live wallpaper.",
+      "keywords": [
+        "wallpaper",
+        "background",
+        "live"
+      ],
       "mode": "view"
+    },
+    {
+      "name": "toggle-live-wallpaper",
+      "title": "Pause or Resume Live Wallpaper",
+      "subtitle": "Wallpaper Picker",
+      "description": "Pause or resume the live (video) wallpaper. Stays paused until resumed, across logins.",
+      "keywords": [
+        "live",
+        "video",
+        "pause",
+        "resume",
+        "wallpaper"
+      ],
+      "mode": "no-view"
+    },
+    {
+      "name": "random-wallpaper",
+      "title": "Random Wallpaper",
+      "subtitle": "Wallpaper Picker",
+      "description": "Set a random still wallpaper from the library.",
+      "keywords": [
+        "random",
+        "shuffle",
+        "wallpaper"
+      ],
+      "mode": "no-view"
+    },
+    {
+      "name": "previous-wallpaper",
+      "title": "Previous Wallpaper",
+      "subtitle": "Wallpaper Picker",
+      "description": "Go back to the last wallpaper. Run it again to swap back.",
+      "keywords": [
+        "previous",
+        "back",
+        "undo",
+        "wallpaper"
+      ],
+      "mode": "no-view"
     }
   ],
   "preferences": [
@@ -31,13 +76,28 @@
       "required": false,
       "title": "Subfolder depth",
       "description": "How many levels below the wallpaper folder are scanned.",
-      "default": "2",
+      "default": "3",
       "data": [
-        { "title": "Folder only", "value": "1" },
-        { "title": "Folder + one level", "value": "2" },
-        { "title": "Three levels", "value": "3" },
-        { "title": "Four levels", "value": "4" },
-        { "title": "Five levels", "value": "5" }
+        {
+          "title": "Folder only",
+          "value": "1"
+        },
+        {
+          "title": "Folder + one level",
+          "value": "2"
+        },
+        {
+          "title": "Three levels",
+          "value": "3"
+        },
+        {
+          "title": "Four levels",
+          "value": "4"
+        },
+        {
+          "title": "Five levels",
+          "value": "5"
+        }
       ]
     },
     {
@@ -57,10 +117,22 @@
       "description": "How many wallpapers per row. Fewer columns means larger previews.",
       "default": "4",
       "data": [
-        { "title": "3 — largest previews", "value": "3" },
-        { "title": "4", "value": "4" },
-        { "title": "5", "value": "5" },
-        { "title": "6 — most at once", "value": "6" }
+        {
+          "title": "3 \u2014 largest previews",
+          "value": "3"
+        },
+        {
+          "title": "4",
+          "value": "4"
+        },
+        {
+          "title": "5",
+          "value": "5"
+        },
+        {
+          "title": "6 \u2014 most at once",
+          "value": "6"
+        }
       ]
     },
     {
@@ -71,8 +143,14 @@
       "description": "Sections organize the library; Flat removes headers and is the lightest layout.",
       "default": "flat",
       "data": [
-        { "title": "Flat — smoothest scrolling", "value": "flat" },
-        { "title": "Sections — organized library", "value": "sections" }
+        {
+          "title": "Flat \u2014 smoothest scrolling",
+          "value": "flat"
+        },
+        {
+          "title": "Sections \u2014 organized library",
+          "value": "sections"
+        }
       ]
     },
     {
@@ -83,8 +161,14 @@
       "description": "Search filters wallpapers; Browse keeps the full grid visible for keyboard navigation. Either way, Ctrl+Shift+B swaps modes without leaving the picker.",
       "default": "search",
       "data": [
-        { "title": "Search — filter as you type", "value": "search" },
-        { "title": "Browse — keep all items visible", "value": "browse" }
+        {
+          "title": "Search \u2014 filter as you type",
+          "value": "search"
+        },
+        {
+          "title": "Browse \u2014 keep all items visible",
+          "value": "browse"
+        }
       ]
     },
     {
@@ -92,25 +176,21 @@
       "type": "dropdown",
       "required": false,
       "title": "Default sort",
-      "description": "How wallpapers are ordered when the picker opens.",
-      "default": "recent",
+      "description": "How wallpapers are ordered until you pick another sort in the picker (Ctrl+S). After that, the picker remembers your last sort.",
+      "default": "hue",
       "data": [
-        { "title": "Recently added", "value": "recent" },
-        { "title": "Name", "value": "name" },
-        { "title": "Colour", "value": "hue" }
-      ]
-    },
-    {
-      "name": "defaultAction",
-      "type": "dropdown",
-      "required": false,
-      "title": "Enter action",
-      "description": "What pressing Enter on a wallpaper does first.",
-      "default": "palette",
-      "data": [
-        { "title": "Choose a palette", "value": "palette" },
-        { "title": "Apply the dominant palette immediately", "value": "dominant" },
-        { "title": "Set wallpaper and keep the current theme", "value": "wallpaper" }
+        {
+          "title": "Colour",
+          "value": "hue"
+        },
+        {
+          "title": "Recently added",
+          "value": "recent"
+        },
+        {
+          "title": "Name",
+          "value": "name"
+        }
       ]
     },
     {
@@ -121,12 +201,30 @@
       "description": "Animation used when applying a wallpaper.",
       "default": "spotlight-wave",
       "data": [
-        { "title": "Spotlight wave — focused reveal", "value": "spotlight-wave" },
-        { "title": "Iris close — closing circle", "value": "iris-close" },
-        { "title": "Wave sweep — top to bottom", "value": "wave-sweep" },
-        { "title": "Diagonal wipe — quick change", "value": "diagonal-wipe" },
-        { "title": "Soft fade — gentle crossfade", "value": "soft-fade" },
-        { "title": "None — apply instantly", "value": "none" }
+        {
+          "title": "Spotlight wave \u2014 focused reveal",
+          "value": "spotlight-wave"
+        },
+        {
+          "title": "Iris close \u2014 closing circle",
+          "value": "iris-close"
+        },
+        {
+          "title": "Wave sweep \u2014 top to bottom",
+          "value": "wave-sweep"
+        },
+        {
+          "title": "Diagonal wipe \u2014 quick change",
+          "value": "diagonal-wipe"
+        },
+        {
+          "title": "Soft fade \u2014 gentle crossfade",
+          "value": "soft-fade"
+        },
+        {
+          "title": "None \u2014 apply instantly",
+          "value": "none"
+        }
       ]
     },
     {
@@ -137,12 +235,30 @@
       "description": "How long animated transitions take. Auto uses the preset's tuned duration.",
       "default": "auto",
       "data": [
-        { "title": "Auto — recommended", "value": "auto" },
-        { "title": "0.3 s — very fast", "value": "0.3" },
-        { "title": "0.5 s — fast", "value": "0.5" },
-        { "title": "0.65 s — smooth", "value": "0.65" },
-        { "title": "0.8 s — relaxed", "value": "0.8" },
-        { "title": "1.0 s — slow", "value": "1.0" }
+        {
+          "title": "Auto \u2014 recommended",
+          "value": "auto"
+        },
+        {
+          "title": "0.3 s \u2014 very fast",
+          "value": "0.3"
+        },
+        {
+          "title": "0.5 s \u2014 fast",
+          "value": "0.5"
+        },
+        {
+          "title": "0.65 s \u2014 smooth",
+          "value": "0.65"
+        },
+        {
+          "title": "0.8 s \u2014 relaxed",
+          "value": "0.8"
+        },
+        {
+          "title": "1.0 s \u2014 slow",
+          "value": "1.0"
+        }
       ]
     },
     {
@@ -153,10 +269,22 @@
       "description": "How images are fitted to each display.",
       "default": "crop",
       "data": [
-        { "title": "Crop — fill screen", "value": "crop" },
-        { "title": "Fit — preserve all of image", "value": "fit" },
-        { "title": "Stretch — fill exactly", "value": "stretch" },
-        { "title": "Original — no resize", "value": "no" }
+        {
+          "title": "Crop \u2014 fill screen",
+          "value": "crop"
+        },
+        {
+          "title": "Fit \u2014 preserve all of image",
+          "value": "fit"
+        },
+        {
+          "title": "Stretch \u2014 fill exactly",
+          "value": "stretch"
+        },
+        {
+          "title": "Original \u2014 no resize",
+          "value": "no"
+        }
       ]
     },
     {
@@ -167,21 +295,48 @@
       "description": "Which part stays visible when crop mode trims an image. Only used when the wallpaper fit above is Crop.",
       "default": "center",
       "data": [
-        { "title": "Centre", "value": "center" },
-        { "title": "Top", "value": "top" },
-        { "title": "Bottom", "value": "bottom" },
-        { "title": "Left", "value": "left" },
-        { "title": "Right", "value": "right" },
-        { "title": "Top-left", "value": "top-left" },
-        { "title": "Top-right", "value": "top-right" },
-        { "title": "Bottom-left", "value": "bottom-left" },
-        { "title": "Bottom-right", "value": "bottom-right" }
+        {
+          "title": "Centre",
+          "value": "center"
+        },
+        {
+          "title": "Top",
+          "value": "top"
+        },
+        {
+          "title": "Bottom",
+          "value": "bottom"
+        },
+        {
+          "title": "Left",
+          "value": "left"
+        },
+        {
+          "title": "Right",
+          "value": "right"
+        },
+        {
+          "title": "Top-left",
+          "value": "top-left"
+        },
+        {
+          "title": "Top-right",
+          "value": "top-right"
+        },
+        {
+          "title": "Bottom-left",
+          "value": "bottom-left"
+        },
+        {
+          "title": "Bottom-right",
+          "value": "bottom-right"
+        }
       ]
     }
   ],
   "scripts": {
-    "bundle": "rm -rf assets/backend && mkdir -p assets/backend && cp ../*.sh assets/backend/",
-    "build": "npm run bundle && vici build && sh scripts/themed-icon.sh",
+    "bundle": "node scripts/bundle-backend.mjs",
+    "build": "npm run bundle && vici build",
     "dev": "npm run bundle && vici develop",
     "lint": "vici lint",
     "test": "node scripts/test-lib.mjs && python3 -m unittest discover -s ../tests -v"
@@ -192,5 +347,8 @@
   "devDependencies": {
     "@types/react": "^19.1.17",
     "typescript": "^5.9.2"
+  },
+  "engines": {
+    "node": ">=22"
   }
 }

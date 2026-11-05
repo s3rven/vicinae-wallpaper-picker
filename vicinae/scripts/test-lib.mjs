@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import * as ts from "typescript";
@@ -20,7 +20,10 @@ const compiled = ts.transpileModule(readFileSync(sourcePath, "utf8"), {
 const tempDir = mkdtempSync(join(dirname(fileURLToPath(import.meta.url)), ".test-lib-"));
 const compiledPath = join(tempDir, "lib.cjs");
 writeFileSync(compiledPath, compiled);
-globalThis.vicinae = { environ: { supportPath: tempDir } };
+globalThis.vicinae = { environ: { supportPath: tempDir }, preferences: {} };
+for (const key of Object.keys(process.env)) {
+  if (key.startsWith("WALLPAPER_") || key.startsWith("AWWW_")) delete process.env[key];
+}
 process.env.XDG_STATE_HOME = tempDir;
 process.env.WALLPAPER_PICKER_DIR = tempDir;
 process.env.XDG_CACHE_HOME = join(tempDir, "cache");
@@ -32,9 +35,6 @@ try {
   assert.equal(lib.normaliseHex("#AABBCC"), "#aabbcc");
   assert.equal(lib.normaliseHex("not-a-colour"), null);
   assert.equal(lib.normaliseHex("#ff0000junk"), null);
-  assert.equal(lib.parseColour("purple"), lib.parseColour("violet"));
-  assert.equal(lib.parseColour("sage"), lib.parseColour("green"));
-  assert.equal(lib.parseColour("grey"), lib.parseColour("silver"));
 
   assert.equal(lib.rgbString("#4488ff"), "68, 136, 255");
   assert.equal(lib.rgbString("not-a-colour"), "");
@@ -47,9 +47,7 @@ try {
   assert.equal(lib.displayName("wallpaper.PNG", false), "wallpaper");
   assert.equal(lib.displayName("wallpaper.PNG", true), "wallpaper.PNG");
 
-  assert.deepEqual(lib.nameSchemes(["#0011ff", "#aabbff"]), ["Deep Blue", "Light Blue"]);
-  assert.equal(lib.wallpaperPreviewMarkdown({ thumb: '/cache/rain #1 (夜).jpg' }),
-    '![Wallpaper preview](file:///cache/rain%20%231%20%28%E5%A4%9C%29.jpg)');
+
 
   const wallpaper = {
     path: "/wallpapers/one.jpg",
@@ -60,7 +58,7 @@ try {
     folder: "Root",
     mtime: 123,
     group: "blue",
-    hue: 220,
+    brightness: 40,
     title: "Rainy alley",
     tags: ["rain", "city"],
     source: "https://wallhaven.cc/w/abc123",
@@ -79,6 +77,21 @@ try {
   assert.deepEqual(lib.filterLibrary(library, "current", new Set()), [archive]);
   assert.deepEqual(lib.filterLibrary(library, "fav", new Set([archive.path])), [archive]);
   assert.deepEqual(lib.filterLibrary([{ ...wallpaper, folder: "fav" }], "f:fav", new Set()), [{ ...wallpaper, folder: "fav" }]);
+  const video = { ...wallpaper, path: "/wallpapers/clip.mp4" };
+  assert.deepEqual(lib.filterLibrary([wallpaper, video, archive], "live", new Set()), [video]);
+  assert.deepEqual(lib.filterLibrary([wallpaper, video, archive], "stills", new Set()), [wallpaper]);
+  globalThis.vicinae.preferences = { includeCurrent: false, scanDepth: "1" };
+  assert.equal(lib.commandOptions().scan.includeCurrent, false);
+  assert.equal(lib.commandOptions().scan.depth, "1");
+
+  // Colour order: families in rainbow order, light to dark inside one, greys last.
+  const tone = (name, group, brightness) => ({ ...wallpaper, name, group, brightness });
+  assert.deepEqual([tone("g", "neutral", 90), tone("b-dark", "blue", 10), tone("r", "red", 5), tone("b-light", "blue", 80)]
+    .sort(lib.colourOrder).map((w) => w.name), ["r", "b-light", "b-dark", "g"]);
+
+  assert.equal(lib.readView().filter, undefined);
+  lib.writeView({ filter: "f:Live", sort: "hue" });
+  assert.deepEqual(lib.readView(), { filter: "f:Live", sort: "hue" });
 
   assert.deepEqual(lib.parseLibraryMetadata("not json"), {});
   assert.deepEqual(lib.parseLibraryMetadata(JSON.stringify({ version: 2, wallpapers: {} })), {});
@@ -92,18 +105,8 @@ try {
   assert.equal(metadata["Other/a.jpg"].title, "Different image");
   assert.equal(metadata["Other/a.jpg"].source, "");
 
-  assert.equal(lib.writeSavedAccents([{ seed: "#4488ff", name: "Blue" }]), true);
-  assert.deepEqual(lib.readSavedAccents(), [{ seed: "#4488ff", name: "Blue" }]);
-  writeFileSync(join(tempDir, "wallpaper-picker", "saved-accents.json"), JSON.stringify([null, { seed: "bad input" }, { seed: "#48f", name: "Blue" }, { seed: "#4488FF", name: "Sky" }]));
-  assert.deepEqual(lib.readSavedAccents(), [{ seed: "#4488ff", name: "Sky" }]);
-
   assert.equal(lib.writeFavourites(new Set([wallpaper.path])), true);
   assert.deepEqual(lib.readFavourites(), new Set([wallpaper.path]));
-  assert.equal(lib.writeNeutral(true), true);
-  assert.equal(lib.readNeutral(), true);
-  assert.equal(lib.writeNeutral(false), true);
-  assert.equal(lib.readNeutral(), false);
-  assert.equal(lib.clearCustomAccent(), true);
 
   // Directory preferences resolve consistently with the scanner, including
   // aliases and trailing slashes, so metadata is looked up by the right key.
@@ -116,35 +119,33 @@ try {
   const aliasDir = join(tempDir, "library-alias");
   symlinkSync(libraryDir, aliasDir, "dir");
   const scanScript = join(tempDir, "scan-wallpapers.sh");
-  writeFileSync(scanScript, '#!/bin/sh\nprintf "%s/one.jpg\\tone.jpg\\t\\t0\\t#4488ff\\tRoot\\t123\\n" "$WALLPAPER_DIR"\n');
+  writeFileSync(scanScript, '#!/bin/sh\nprintf "%s/one.jpg\\tone.jpg\\t\\t0\\t#4488ff\\tRoot\\t123\\t57\\n" "$WALLPAPER_DIR"\n');
   chmodSync(scanScript, 0o755);
   const scanned = await lib.scanWallpapers({ directory: aliasDir + "/" });
   assert.equal(scanned.length, 1);
   assert.equal(scanned[0].path, join(libraryDir, "one.jpg"));
   assert.equal(scanned[0].title, "Rainy alley");
   assert.deepEqual(scanned[0].tags, ["rain"]);
+  assert.equal(scanned[0].brightness, 57);
 
-  const applyScript = join(tempDir, "apply-wallpaper-theme.sh");
+  assert.equal(lib.libraryDirectory("~/Pictures"), join(homedir(), "Pictures"));
+  await assert.rejects(lib.scanWallpapers({ directory: join(libraryDir, "one.jpg") }), /Choose a wallpaper folder/);
+  const applyScript = join(tempDir, "apply-wallpaper.sh");
   writeFileSync(applyScript, "#!/bin/sh\nexit 0\n");
-  chmodSync(applyScript, 0o755);
-  assert.equal(lib.applyWallpaper(libraryDir, 0), false);
-  assert.equal(lib.applyWallpaper(join(libraryDir, "missing.jpg"), 0), false);
+  assert.equal(lib.applyWallpaper(libraryDir), false);
+  assert.equal(lib.applyWallpaper(join(libraryDir, "missing.jpg")), false);
 
-  // Exercise the actual detached launcher contract: the keep-theme action
-  // must reach the backend without affecting subsequent palette applies.
-  writeFileSync(applyScript, '#!/bin/sh\nprintf "%s\\n" "$WALLPAPER_PICKER_WALLPAPER_ONLY" "$WALLPAPER_RESIZE_MODE" "$1" "$3" > "$TEST_APPLY_CAPTURE"\n');
-  for (const wallpaperOnly of [true, false]) {
-    const capture = join(tempDir, `apply-${wallpaperOnly}.txt`);
-    process.env.TEST_APPLY_CAPTURE = capture;
-    assert.equal(lib.applyWallpaper(join(libraryDir, "one.jpg"), 0, undefined,
-      { wallpaperOnly, resize: "fit", transition: "soft-fade" }), true);
-    let received = "";
-    for (let attempt = 0; attempt < 100 && !received; attempt++) {
-      await new Promise((resolve) => setTimeout(resolve, 10));
-      try { received = readFileSync(capture, "utf8"); } catch { /* child is starting */ }
-    }
-    assert.equal(received, `${wallpaperOnly ? "1" : "0"}\nfit\n${join(libraryDir, "one.jpg")}\nsoft-fade\n`);
+  // The detached launcher forwards fit and transition without shell evaluation.
+  writeFileSync(applyScript, '#!/bin/sh\nprintf "%s\\n" "$WALLPAPER_RESIZE_MODE" "$1" "$2" > "$TEST_APPLY_CAPTURE"\n');
+  const capture = join(tempDir, "apply.txt");
+  process.env.TEST_APPLY_CAPTURE = capture;
+  assert.equal(lib.applyWallpaper(join(libraryDir, "one.jpg"), { resize: "fit", transition: "soft-fade" }), true);
+  let received = "";
+  for (let attempt = 0; attempt < 100 && !received; attempt++) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    try { received = readFileSync(capture, "utf8"); } catch { /* child is starting */ }
   }
+  assert.equal(received, `fit\n${join(libraryDir, "one.jpg")}\nsoft-fade\n`);
   console.log("lib helpers: ok");
 } finally {
   rmSync(tempDir, { recursive: true, force: true });

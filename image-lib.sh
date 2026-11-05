@@ -1,22 +1,15 @@
 # shellcheck shell=bash
-# Shared thumbnail cache contract. Sourced by scan-wallpapers.sh, scan-colors.sh
-# and apply-wallpaper-theme.sh.
-#
-# Why this file exists: the picker guarantees that the palette you preview is the
-# palette you get. That holds only because matugen samples the *same pixels* in
-# scan-colors.sh (preview) and apply-wallpaper-theme.sh (apply) — which in turn
-# holds only if both derive the same cache path and, on a miss, render the thumb
-# with the same crop. Those two rules used to be copy-pasted into three scripts.
-# Editing the geometry in one and not the others would not error; it would just
-# silently start applying a theme that differs from the preview. Keep them here,
-# in one place, so that can't happen.
+# Shared image, video-poster and colour-hint cache helpers.
+[ "${_WALLPAPER_IMAGES_LOADED:-0}" = 1 ] && return 0
+_WALLPAPER_IMAGES_LOADED=1
+_wp_env="${XDG_CONFIG_HOME:-$HOME/.config}/wallpaper-picker/env"
+# shellcheck source=/dev/null
+if [ -r "$_wp_env" ]; then . "$_wp_env"; fi
+unset _wp_env
+umask 077
 
 THUMB_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/wallpaper-picker/thumbs"
 
-# Changing either of these invalidates every cached thumb and every cached scheme
-# (both are keyed on the source path, not on the geometry). That's fine — they
-# regenerate — but preview and apply must always agree, so change them together
-# by virtue of there being only one copy.
 THUMB_GEOMETRY='800x500'
 THUMB_QUALITY=82
 
@@ -39,6 +32,39 @@ thumb_path() {
     printf '%s/%s.jpg\n' "$THUMB_DIR" "$(thumb_hash "$1")"
 }
 
+# --- live (video) wallpapers ---------------------------------------------------
+#
+# A video is a wallpaper like any other: it keeps its own path in the picker's
+# state. Everything that needs pixels (awww, thumbnails, the lock screen)
+# gets a full-size still of its first frame instead, so the still awww shows
+# under the player is exactly the frame playback starts on.
+LIVE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/wallpaper-picker/live"
+
+is_live() {
+    case "${1,,}" in *.mp4|*.webm|*.mkv) return 0 ;; *) return 1 ;; esac
+}
+
+# Print the cached first-frame still for video $1, rendering it on a miss.
+live_poster() {
+    local dst tmp
+    dst="$LIVE_DIR/$(thumb_hash "$1").png"
+    if ! thumb_is_fresh "$1" "$dst"; then
+        command -v ffmpeg >/dev/null 2>&1 || return 1
+        mkdir -p "$LIVE_DIR" || return 1
+        tmp="${dst%.png}.${BASHPID:-$$}.tmp.png"
+        if ! ffmpeg -nostdin -loglevel error -y -i "$1" -frames:v 1 "$tmp" 9>&- || ! mv -f "$tmp" "$dst"; then
+            rm -f "$tmp"
+            return 1
+        fi
+    fi
+    printf '%s\n' "$dst"
+}
+
+# The image to show for wallpaper $1: itself, or a video's still.
+still_for() {
+    if is_live "$1"; then live_poster "$1"; else printf '%s\n' "$1"; fi
+}
+
 thumb_color_path() {
     printf '%s/%s.color\n' "$THUMB_DIR" "$(thumb_hash "$1")"
 }
@@ -50,7 +76,11 @@ thumb_color_path() {
 # path, so it cannot notice that the *algorithm* changed. Version it: a cache
 # written by an older rule is ignored and rebuilt, which stops a collection from
 # ever being half-sorted by one rule and half by another.
-COLOR_VERSION=2
+COLOR_VERSION=3
+
+# v3 adds the image's mean brightness (0-100, mean OKLab-style lightness of the
+# same 12-colour histogram) after the hex. The colour sort orders each colour
+# family light to dark with it, so a family reads as a gradient, not a shuffle.
 
 # The wallpaper's characteristic colour, not its average.
 #
@@ -82,7 +112,7 @@ dominant_color() {
             hex = ""
             # Alpha-bearing sources can print 8 hex digits; take the leading six.
             for (i = 1; i <= NF; i++)
-                if ($i ~ /^#[0-9A-Fa-f]{6}/) { hex = substr($i, 1, 7); break }
+                if ($i ~ /^#[0-9A-Fa-f]+$/ && length($i) >= 7) { hex = substr($i, 1, 7); break }
             if (hex == "" || n <= 0)
                 next
             r = hexval(substr(hex, 2, 2))
@@ -94,10 +124,18 @@ dominant_color() {
             mn = r; if (g < mn) mn = g; if (b < mn) mn = b
             if (n * (mx - mn) > best) { best = n * (mx - mn); best_hex = hex }
             if (n > most) { most = n; most_hex = hex }
+            # Perceived lightness: cube root of linear luminance, weighted by area.
+            y = 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b)
+            light += n * (y > 0 ? exp(log(y) / 3) : 0)
+            total += n
         }
+        function lin(c) { c /= 255; return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ^ 2.4 }
         # A greyscale image scores zero everywhere, so fall back to its most
         # common shade instead of returning nothing at all.
-        END { if (best_hex != "") print best_hex; else print most_hex }'
+        END {
+            if (total == 0) exit
+            printf "%s %d\n", (best_hex != "" ? best_hex : most_hex), light / total * 100 + 0.5
+        }'
 }
 
 # True when $2 holds a colour written by the *current* algorithm for source $1.
@@ -118,35 +156,20 @@ thumb_is_fresh() {
 
 # Render src -> dst at the canonical geometry. Atomic: renders to a temp file and
 # renames, so a concurrent reader never sees a half-written JPEG (scan-wallpapers'
-# background refresh and an on-demand build from scan-colors can race on the same
-# path). Returns non-zero if no ImageMagick is installed or the render failed.
+# concurrent background refreshes can race on the same path). Returns non-zero if no ImageMagick is installed or the render failed.
 ensure_thumb() {
-    local src="$1" dst="$2" tmp
+    local src="$1" dst="$2" tmp img
     thumb_is_fresh "$src" "$dst" && return 0
     [ ${#THUMB_CMD[@]} -gt 0 ] || return 1
+    img=$(still_for "$src") || return 1
 
     mkdir -p "${dst%/*}" || return 1
     tmp="${dst}.${BASHPID:-$$}.tmp"
-    if "${THUMB_CMD[@]}" "$src" -auto-orient -strip \
+    if "${THUMB_CMD[@]}" "$img" -auto-orient -strip \
         -thumbnail "${THUMB_GEOMETRY}^" -gravity center -extent "$THUMB_GEOMETRY" \
         -quality "$THUMB_QUALITY" "jpg:$tmp" 2>/dev/null && mv -f "$tmp" "$dst"; then
         return 0
     fi
     rm -f "$tmp"
     return 1
-}
-
-# The input matugen should sample for `src`: the cached thumb when it's fresh
-# (3-5x faster than decoding a 4K source, identical extraction), else the source.
-# Builds the thumb on demand so preview and apply agree even when the picker's
-# background refresh hasn't reached this wallpaper yet.
-matugen_input_for() {
-    local src="$1" thumb
-    thumb=$(thumb_path "$src")
-    ensure_thumb "$src" "$thumb" || true
-    if thumb_is_fresh "$src" "$thumb"; then
-        printf '%s\n' "$thumb"
-    else
-        printf '%s\n' "$src"
-    fi
 }

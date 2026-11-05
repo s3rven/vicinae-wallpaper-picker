@@ -3,7 +3,6 @@ import {
   ActionPanel,
   Grid,
   Icon,
-  List,
   Toast,
   closeMainWindow,
   getPreferenceValues,
@@ -12,42 +11,33 @@ import {
 } from "@vicinae/api";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  ACCENT_SEEDS,
   COLOR_GROUPS,
-  CUSTOM_INDEX,
+  LIVE_POLICIES,
+  type LiveStatus,
   type ApplyOptions,
   type ScanOptions,
-  type SavedAccent,
-  Scheme,
   Wallpaper,
-  accentScheme,
   applyWallpaper,
   capitalise,
-  clearCustomAccent,
+  colourOrder,
   filterLibrary,
   isArchived,
+  isLive,
+  liveControl,
+  liveStatus,
   libraryDirectory,
   missingTools,
   nameOf,
-  nameSchemes,
-  normaliseHex,
-  parseColour,
   prettyName,
-  readAppliedPrimary,
   readableName,
   readCachedLibrary,
-  readCustomAccent,
   readFavourites,
-  readNeutral,
-  readSavedAccents,
-  scanSchemes,
+  readView,
   scanWallpapers,
   vividnessOf,
-  wallpaperPreviewMarkdown,
   writeCachedLibrary,
   writeFavourites,
-  writeNeutral,
-  writeSavedAccents,
+  writeView,
 } from "./lib";
 
 // Sorting and grouping are one control here, not two.
@@ -58,8 +48,8 @@ import {
 // always explain the order instead of cutting across it, and the view keeps one
 // knob rather than an order-by/group-by matrix nobody wants to operate.
 //
-// Newest first is the default: a collection is most useful with whatever you
-// just added to it on top.
+// Colour is the default: a grid that flows through the families reads as one
+// collection, where date order scatters unrelated colours side by side.
 type Sort = "recent" | "name" | "hue";
 type GroupBy = "date" | "folder" | "colour";
 type Transition = "spotlight-wave" | "iris-close" | "wave-sweep" | "diagonal-wipe" | "soft-fade" | "none";
@@ -77,14 +67,13 @@ type CropGravity =
   | "bottom-right";
 type SearchMode = "search" | "browse";
 type LayoutMode = "sections" | "flat";
-type DefaultAction = "palette" | "dominant" | "wallpaper";
 type ScanDepth = "1" | "2" | "3" | "4" | "5";
 type ColumnCount = "3" | "4" | "5" | "6";
 
 const SORTS: { id: Sort; title: string; icon: Icon; group: GroupBy }[] = [
+  { id: "hue", title: "Colour", icon: Icon.Swatch, group: "colour" },
   { id: "recent", title: "Recently Added", icon: Icon.Clock, group: "date" },
   { id: "name", title: "Name", icon: Icon.Text, group: "folder" },
-  { id: "hue", title: "Colour", icon: Icon.Swatch, group: "colour" },
 ];
 
 const TRANSITIONS: { id: Transition; title: string; description: string }[] = [
@@ -111,7 +100,6 @@ const GRAVITY_VALUES: readonly CropGravity[] = [
 ];
 const SEARCH_MODE_VALUES: readonly SearchMode[] = ["search", "browse"];
 const LAYOUT_MODE_VALUES: readonly LayoutMode[] = ["sections", "flat"];
-const DEFAULT_ACTION_VALUES: readonly DefaultAction[] = ["palette", "dominant", "wallpaper"];
 const SCAN_DEPTH_VALUES: readonly ScanDepth[] = ["1", "2", "3", "4", "5"];
 const COLUMN_VALUES: readonly ColumnCount[] = ["3", "4", "5", "6"];
 
@@ -167,8 +155,14 @@ const folderFilter = (folder: string) => `f:${folder}`;
 // closes hit - and an unhandled rejection kills this worker outright (Node's
 // default since v15). Swallowing both awaits here is what keeps a lost race
 // a no-op instead of a crash the next apply has to pay for as a cold restart.
-async function applyAndClose(path: string, index: number, accent?: string, options?: ApplyOptions): Promise<void> {
-  if (!applyWallpaper(path, index, accent, options)) {
+async function applyAndClose(path: string, options?: ApplyOptions): Promise<void> {
+  const missing = missingTools({ path });
+  if (missing.length) {
+    await showToast({ style: Toast.Style.Failure, title: "Missing wallpaper tools",
+      message: `Install ${missing.join(", ")} and try again.` }).catch(() => undefined);
+    return;
+  }
+  if (!applyWallpaper(path, options)) {
     await showToast({
       style: Toast.Style.Failure,
       title: "Could not start wallpaper apply",
@@ -277,7 +271,6 @@ type Prefs = {
   wallpaperDirectory?: string;
   scanDepth?: ScanDepth;
   includeCurrent?: boolean;
-  defaultAction?: DefaultAction;
 };
 
 export default function SetWallpaper() {
@@ -286,17 +279,18 @@ export default function SetWallpaper() {
   // One dropdown, four rails. "" is everything, "fav" the starred set,
   // "current" the applied image, "c:<name>" a colour family and "f:<name>" a
   // literal folder — prefixes keep a folder called "fav" or "blue" unambiguous.
-  const [filter, setFilter] = useState("");
+  // Both the filter and the sort start where the last session left them.
+  const [remembered] = useState(readView);
+  const [filter, setFilter] = useState(remembered.filter ?? "");
   const prefs = getPreferenceValues<Prefs>();
   const initialSort: Sort =
-    prefs.defaultSort === "name" || prefs.defaultSort === "hue" ? prefs.defaultSort : "recent";
+    prefs.defaultSort === "name" || prefs.defaultSort === "recent" ? prefs.defaultSort : "hue";
   const wallpaperDirectory =
     typeof prefs.wallpaperDirectory === "string" && prefs.wallpaperDirectory.trim().length > 0
       ? prefs.wallpaperDirectory.trim()
       : undefined;
-  const scanDepth = preferenceValue(prefs.scanDepth, SCAN_DEPTH_VALUES, "2");
+  const scanDepth = preferenceValue(prefs.scanDepth, SCAN_DEPTH_VALUES, "3");
   const includeCurrent = prefs.includeCurrent ?? true;
-  const defaultAction = preferenceValue(prefs.defaultAction, DEFAULT_ACTION_VALUES, "palette");
   const scanOptions: ScanOptions = useMemo(
     () => ({ directory: wallpaperDirectory, depth: scanDepth, includeCurrent }),
     [wallpaperDirectory, scanDepth, includeCurrent],
@@ -316,10 +310,13 @@ export default function SetWallpaper() {
     () => preferenceValue(prefs.searchMode, SEARCH_MODE_VALUES, "search") === "browse",
   );
   const layoutMode = preferenceValue(prefs.layoutMode, LAYOUT_MODE_VALUES, "flat");
-  const [sort, setSort] = useState<Sort>(initialSort);
+  const [sort, setSort] = useState<Sort>(
+    () => SORTS.find((s) => s.id === remembered.sort)?.id ?? initialSort,
+  );
+  // "Current" is a one-off lookup: remembered, the next open would show one tile.
+  useEffect(() => writeView({ filter: filter === "current" ? "" : filter, sort }), [filter, sort]);
   const [favourites, setFavourites] = useState<Set<string>>(() => readFavourites());
-  const [neutral, setNeutral] = useState(() => readNeutral());
-  const [pinned] = useState(() => readCustomAccent());
+  const [live, setLive] = useState<LiveStatus | null>(null);
   const [selectedPath, setSelectedPath] = useState("");
   const [scanError, setScanError] = useState("");
 
@@ -387,13 +384,13 @@ export default function SetWallpaper() {
         writeCachedLibrary(list, scanOptions);
         pollCache(list, request);
         if (announce) {
-          showToast({ style: Toast.Style.Success, title: `Rescanned ${list.length} wallpapers` });
+          void showToast({ style: Toast.Style.Success, title: `Rescanned ${list.length} wallpapers` }).catch(() => undefined);
         }
       })
       .catch((e: Error) => {
         if (alive.current && request === scanRequest.current) {
           setScanError(e.message);
-          showToast({ style: Toast.Style.Failure, title: "Could not scan wallpapers", message: e.message });
+          void showToast({ style: Toast.Style.Failure, title: "Could not scan wallpapers", message: e.message }).catch(() => undefined);
         }
       })
       .finally(() => {
@@ -431,7 +428,7 @@ export default function SetWallpaper() {
   const sorted = useMemo(() => {
     const src = [...wallpapers];
     if (sort === "name") return src.sort((a, b) => (a.title || a.name).localeCompare(b.title || b.name));
-    if (sort === "hue") return src.sort((a, b) => a.hue - b.hue || a.name.localeCompare(b.name));
+    if (sort === "hue") return src.sort(colourOrder);
     return src.sort((a, b) => b.mtime - a.mtime || a.name.localeCompare(b.name));
   }, [wallpapers, sort]);
 
@@ -458,7 +455,7 @@ export default function SetWallpaper() {
     const acc = new Map<string, { count: number; swatch: string; score: number }>();
     for (const w of wallpapers) {
       if (isArchived(w)) continue;
-      if (!w.group) continue;
+      if (!w.group || !w.color) continue;
       const seen = acc.get(w.group) ?? { count: 0, swatch: w.color, score: -1 };
       seen.count += 1;
       const score = vividnessOf(w.color);
@@ -473,7 +470,16 @@ export default function SetWallpaper() {
 
   const shown = useMemo(() => filterLibrary(sorted, filter, favourites), [sorted, filter, favourites]);
 
-  const randomCandidates = useMemo(() => shown.filter((w) => !w.current), [shown]);
+  // A remembered filter can go stale: the folder was emptied, the last star was
+  // removed. Fall back to everything rather than open on an empty grid, but only
+  // once colours are known, or a cold colour cache would drop "Blue".
+  useEffect(() => {
+    if (filter && !loading && wallpapers.length > 0 && shown.length === 0 && wallpapers.every((w) => w.color)) {
+      setFilter("");
+    }
+  }, [filter, loading, wallpapers, shown]);
+
+  const randomCandidates = useMemo(() => shown.filter((w) => !w.current && !isLive(w.path)), [shown]);
 
   const selected = useMemo(
     () => shown.find((wallpaper) => wallpaper.path === selectedPath),
@@ -501,24 +507,27 @@ export default function SetWallpaper() {
     const next = new Set(favourites);
     if (!next.delete(path)) next.add(path);
     if (!writeFavourites(next)) {
-      showToast({ style: Toast.Style.Failure, title: "Could not save favourites" });
+      void showToast({ style: Toast.Style.Failure, title: "Could not save favourites" }).catch(() => undefined);
       return;
     }
     setFavourites(next);
   }
 
-  function toggleNeutral() {
-    const next = !neutral;
-    if (!writeNeutral(next)) {
-      showToast({ style: Toast.Style.Failure, title: "Could not save neutral mode" });
+  // Asked once on open: the player only changes when this picker or a keybind
+  // changes it, and both refresh the state they set.
+  useEffect(() => {
+    void liveStatus().then((s) => alive.current && setLive(s));
+  }, []);
+  const hasLive = useMemo(() => wallpapers.some((w) => isLive(w.path)), [wallpapers]);
+  const liveCount = useMemo(() => wallpapers.filter((w) => !isArchived(w) && isLive(w.path)).length, [wallpapers]);
+
+  async function controlLive(next: Partial<LiveStatus>, args: string[], title: string) {
+    if (!(await liveControl(...args))) {
+      void showToast({ style: Toast.Style.Failure, title: "Could not change the live wallpaper" }).catch(() => undefined);
       return;
     }
-    setNeutral(next);
-    showToast({
-      style: Toast.Style.Success,
-      title: next ? "Neutral theme on" : "Neutral theme off",
-      message: "Applies to the next wallpaper you set",
-    });
+    setLive((s) => (s ? { ...s, ...next } : s));
+    void showToast({ style: Toast.Style.Success, title }).catch(() => undefined);
   }
 
   function toggleBrowseMode() {
@@ -530,32 +539,11 @@ export default function SetWallpaper() {
   // Grouped rather than listed flat: the first section is what enter and
   // cmd+enter already do, the second acts on the file under the cursor and the
   // third changes the view itself. The panel is searchable, so the grouping is
-  // for the eye - it stops "Turn Neutral Theme On" from sitting between two
-  // actions about this one wallpaper.
+  // for the eye: wallpaper actions stay separate from library controls.
   function tileActions(w: Wallpaper) {
     const starred = favourites.has(w.path);
-    const paletteAction = (
-      <Action.Push
-        title="Choose Theme"
-        icon={Icon.Brush}
-        target={<PalettePicker wallpaper={w} applyOptions={applyOptions} />}
-      />
-    );
-    const dominantAction = (
-      <Action
-        title="Apply Dominant Palette"
-        icon={Icon.Wand}
-        shortcut={{ modifiers: ["cmd"], key: "enter" }}
-        onAction={() => applyAndClose(w.path, 0, undefined, applyOptions)}
-      />
-    );
     const wallpaperAction = (
-      <Action
-        title="Set Wallpaper, Keep Current Theme"
-        icon={Icon.Image}
-        shortcut={{ modifiers: ["cmd", "alt"], key: "enter" }}
-        onAction={() => applyAndClose(w.path, 0, undefined, { ...applyOptions, wallpaperOnly: true })}
-      />
+      <Action title="Set Wallpaper" icon={Icon.Image} onAction={() => void applyAndClose(w.path, applyOptions)} />
     );
     // Draws from what the dropdown is showing, not the whole library, so the
     // filter is the knob: "Colours > Blue" then Ctrl+Shift+R is a random blue
@@ -568,23 +556,14 @@ export default function SetWallpaper() {
         shortcut={{ modifiers: ["cmd", "shift"], key: "r" }}
         onAction={() => {
           const pick = randomCandidates[Math.floor(Math.random() * randomCandidates.length)];
-          void applyAndClose(pick.path, 0, undefined, applyOptions);
+          void applyAndClose(pick.path, applyOptions);
         }}
       />
     );
     return (
       <ActionPanel>
         <ActionPanel.Section>
-          {defaultAction === "wallpaper" ? wallpaperAction : defaultAction === "dominant" ? dominantAction : paletteAction}
-          {defaultAction !== "palette" && paletteAction}
-          {defaultAction !== "dominant" && dominantAction}
-          {defaultAction !== "wallpaper" && wallpaperAction}
-          {pinned && <Action title="Keep Pinned Accent" icon={Icon.Swatch}
-            shortcut={{ modifiers: ["cmd", "shift"], key: "enter" }}
-            onAction={() => applyAndClose(w.path, CUSTOM_INDEX, pinned, applyOptions)} />}
-          <Action.Push title="Choose Accent" icon={Icon.Swatch}
-            shortcut={{ modifiers: ["cmd"], key: "e" }}
-            target={<PalettePicker wallpaper={w} applyOptions={applyOptions} initialSource="accents" />} />
+          {wallpaperAction}
           {randomAction}
         </ActionPanel.Section>
         <ActionPanel.Section title="Wallpaper">
@@ -636,12 +615,28 @@ export default function SetWallpaper() {
             shortcut={{ modifiers: ["cmd", "shift"], key: "b" }}
             onAction={toggleBrowseMode}
           />
-          <Action
-            title={neutral ? "Turn Neutral Theme Off" : "Turn Neutral Theme On"}
-            icon={Icon.Contrast}
-            shortcut={{ modifiers: ["cmd"], key: "n" }}
-            onAction={toggleNeutral}
-          />
+          {live?.running && (
+            <Action
+              title={live.paused ? "Resume Live Wallpaper" : "Pause Live Wallpaper"}
+              icon={live.paused ? Icon.Play : Icon.Pause}
+              shortcut={{ modifiers: ["cmd", "shift"], key: "p" }}
+              onAction={() =>
+                void controlLive({ paused: !live.paused }, [live.paused ? "resume" : "pause"],
+                  live.paused ? "Live wallpaper resumed" : "Live wallpaper paused")}
+            />
+          )}
+          {live && (hasLive || live.running) && (
+            <ActionPanel.Submenu title="Pause Live Wallpaper When" icon={Icon.Video}>
+              {LIVE_POLICIES.map((p) => (
+                <Action
+                  key={p.id}
+                  title={p.title}
+                  icon={p.id === live.policy ? Icon.Check : Icon.Circle}
+                  onAction={() => void controlLive({ policy: p.id }, ["policy", p.id], `Pause when: ${p.title}`)}
+                />
+              ))}
+            </ActionPanel.Submenu>
+          )}
           <Action
             title="Refresh Library"
             icon={Icon.ArrowClockwise}
@@ -682,10 +677,10 @@ export default function SetWallpaper() {
       <Grid.Item
         key={w.path}
         id={w.path}
-        content={{ value: w.thumb, tooltip: [name || prettyName(w.name), w.folder !== "Root" ? folderLabel(w.folder) : "", w.resolution].filter(Boolean).join(" · ") }}
+        content={{ value: isLive(w.thumb) ? Icon.Video : w.thumb, tooltip: [name || prettyName(w.name), isLive(w.path) ? "Live" : "", w.folder !== "Root" ? folderLabel(w.folder) : "", w.resolution].filter(Boolean).join(" · ") }}
         title={subtitle ? "" : undefined}
         subtitle={subtitle}
-        keywords={[w.name, name, w.folder, ...w.tags, w.group, w.color ? nameOf(w.color) : undefined].filter(
+        keywords={[w.name, name, w.folder, ...w.tags, w.group, w.color ? nameOf(w.color) : undefined, isLive(w.path) ? "live" : undefined].filter(
           (k): k is string => Boolean(k),
         )}
         actions={tileActions(w)}
@@ -711,6 +706,8 @@ export default function SetWallpaper() {
         : filter === "current"
           ? "Current"
           : filter === "archive" ? "Archive"
+          : filter === "live" ? "Live Wallpapers"
+          : filter === "stills" ? "Still Wallpapers"
           : filter.startsWith("c:")
             ? capitalise(filter.slice(2))
             : filter.startsWith("f:")
@@ -727,12 +724,12 @@ export default function SetWallpaper() {
       filtering={!browseMode}
       searchText={browseMode ? "" : undefined}
       onSearchTextChange={browseMode ? () => undefined : undefined}
-      navigationTitle={`Wallpapers${neutral ? " · neutral" : ""}`}
+      navigationTitle="Wallpapers"
       onSelectionChange={(id) => setSelectedPath(id || "")}
       searchBarPlaceholder={
         browseMode
           ? selected
-            ? `Enter to choose ${describe(selected)}… (Ctrl+Shift+B to search)`
+            ? `Enter to set ${describe(selected)}… (Ctrl+Shift+B to search)`
             : "Browse mode — arrow keys to move, Ctrl+Shift+B to search…"
           : "Search wallpapers, scenes or artists…"
       }
@@ -740,6 +737,8 @@ export default function SetWallpaper() {
         <Grid.Dropdown tooltip="Narrow the library" value={filter} onChange={setFilter}>
           <Grid.Dropdown.Section title="Library">
             <Grid.Dropdown.Item title={`All (${activeCount})`} value="" icon={Icon.Layers} />
+            {liveCount > 0 && <Grid.Dropdown.Item title={`Live (${liveCount})`} value="live" icon={Icon.Video} />}
+            {liveCount > 0 && <Grid.Dropdown.Item title={`Stills (${activeCount - liveCount})`} value="stills" icon={Icon.Image} />}
             {favouriteCount > 0 && (
               <Grid.Dropdown.Item title={`Favourites (${favouriteCount})`} value="fav" icon={Icon.Star} />
             )}
@@ -774,8 +773,8 @@ export default function SetWallpaper() {
       {!loading && wallpapers.length === 0 && scanError && (
         <Grid.EmptyView
           icon={Icon.Folder}
-          title="Can't read the wallpaper folder"
-          description={`${scanError}. Create it, or choose another folder in the extension preferences.`}
+          title="Could not load the wallpaper library"
+          description={scanError}
           actions={
             <ActionPanel>
               <Action
@@ -802,6 +801,8 @@ export default function SetWallpaper() {
           actions={
             <ActionPanel>
               <Action title="Show All Wallpapers" icon={Icon.Layers} onAction={() => setFilter("")} />
+              <Action title="Open Wallpaper Picker Preferences" icon={Icon.Cog}
+                onAction={() => void openExtensionPreferences().catch(() => undefined)} />
               <Action title="Refresh Library" icon={Icon.ArrowClockwise} onAction={() => refresh(true)} />
             </ActionPanel>
           }
@@ -819,222 +820,4 @@ export default function SetWallpaper() {
           : (groups[0]?.items ?? []).map(tile)}
     </Grid>
   );
-}
-
-type ThemeSource = "wallpaper" | "accents" | "all" | "saved";
-const QUIET_ACCENTS = new Set(["Red", "Orange", "Green", "Teal", "Blue", "Violet", "Silver", "Stone"]);
-
-function PalettePicker({ wallpaper, applyOptions, initialSource = "wallpaper" }: {
-  wallpaper: Wallpaper;
-  applyOptions: ApplyOptions;
-  initialSource?: ThemeSource;
-}) {
-  const [source, setSource] = useState<ThemeSource>(initialSource);
-  const [schemes, setSchemes] = useState<Scheme[]>([]);
-  const [accents, setAccents] = useState<Record<string, Scheme>>({});
-  const [loading, setLoading] = useState(true);
-  const [accentBusy, setAccentBusy] = useState(false);
-  const [customBusy, setCustomBusy] = useState(false);
-  const [neutral, setNeutral] = useState(() => readNeutral());
-  const [applied] = useState(() => readAppliedPrimary());
-  const [pinned, setPinned] = useState(() => readCustomAccent());
-  const [saved, setSaved] = useState<SavedAccent[]>(() => readSavedAccents());
-  const [query, setQuery] = useState("");
-  const [showPreview, setShowPreview] = useState(true);
-  const [settled, setSettled] = useState("");
-  const [custom, setCustom] = useState<Scheme | null>(null);
-  const [attempt, setAttempt] = useState(0);
-
-  useEffect(() => {
-    const timer = setTimeout(() => setSettled(query), 220);
-    return () => clearTimeout(timer);
-  }, [query]);
-  const typed = parseColour(settled);
-  const waiting = query !== settled;
-
-  useEffect(() => {
-    let live = true;
-    setLoading(true);
-    scanSchemes(wallpaper.path)
-      .then((next) => { if (live) setSchemes(next); })
-      .catch((error: Error) => {
-        if (live) void showToast({ style: Toast.Style.Failure, title: "Could not extract colours", message: error.message }).catch(() => undefined);
-      })
-      .finally(() => { if (live) setLoading(false); });
-    return () => { live = false; };
-  }, [wallpaper.path, attempt]);
-
-  useEffect(() => {
-    let live = true;
-    setCustom(null);
-    setCustomBusy(Boolean(typed));
-    if (typed) void accentScheme(typed).then((next) => {
-      if (live) { setCustom(next); setCustomBusy(false); }
-    });
-    return () => { live = false; };
-  }, [typed, attempt]);
-
-  // Only derive visible options, with bounded concurrency. Revisits use the
-  // scheme cache; leaving this view stops the remaining batches.
-  const seeds = useMemo(() => {
-    const visible = source === "saved" ? saved.map((a) => a.seed)
-      : source === "wallpaper" ? []
-      : ACCENT_SEEDS.filter((a) => source === "all" || query.trim() || QUIET_ACCENTS.has(a.name)).map((a) => a.seed);
-    return [...new Set([...visible, ...(pinned ? [pinned] : [])])];
-  }, [source, saved, pinned, Boolean(query.trim())]);
-
-  useEffect(() => {
-    let live = true;
-    setAccentBusy(seeds.length > 0);
-    void (async () => {
-      for (let i = 0; i < seeds.length && live; i += 3) {
-        await Promise.all(seeds.slice(i, i + 3).map(async (seed) => {
-          const scheme = await accentScheme(seed);
-          if (live && scheme) setAccents((previous) => ({ ...previous, [seed]: scheme }));
-        }));
-      }
-      if (live) setAccentBusy(false);
-    })();
-    return () => { live = false; };
-  }, [seeds, attempt]);
-
-  function toggleNeutral() {
-    const next = !neutral;
-    if (!writeNeutral(next)) {
-      void showToast({ style: Toast.Style.Failure, title: "Could not save neutral mode" }).catch(() => undefined);
-      return;
-    }
-    setNeutral(next);
-  }
-
-  function toggleSaved(seed: string, name: string) {
-    const next = saved.some((a) => a.seed === seed)
-      ? saved.filter((a) => a.seed !== seed) : [...saved, { seed, name }];
-    if (!writeSavedAccents(next)) {
-      void showToast({ style: Toast.Style.Failure, title: "Could not save accent" }).catch(() => undefined);
-      return;
-    }
-    setSaved(next);
-    if (source === "saved" && next.length === 0) {
-      setSource("accents");
-      setQuery("");
-    }
-  }
-
-  function commonActions(scheme?: Scheme) {
-    return <>
-      {source === "wallpaper" && <Action title={showPreview ? "Hide Wallpaper Preview" : "Show Wallpaper Preview"} icon={Icon.Eye}
-        shortcut={{ modifiers: ["cmd"], key: "d" }} onAction={() => setShowPreview((value) => !value)} />}
-      <Action title={source === "wallpaper" ? "Browse Muted Accents" : "Use Wallpaper Colours"} icon={Icon.Swatch}
-        shortcut={{ modifiers: ["cmd"], key: "e" }} onAction={() => { setSource(source === "wallpaper" ? "accents" : "wallpaper"); setQuery(""); }} />
-      <Action title={neutral ? "Use Coloured Surfaces" : "Use Neutral Surfaces"} icon={Icon.Contrast}
-        shortcut={{ modifiers: ["cmd"], key: "n" }} onAction={toggleNeutral} />
-      <Action.Open title="Open Wallpaper" icon={Icon.Eye} target={wallpaper.path} />
-      {scheme && <Action.CopyToClipboard title="Copy Accent Hex" content={scheme.primary.toUpperCase()}
-        shortcut={{ modifiers: ["cmd", "shift"], key: "c" }} />}
-      {scheme && <Action.CopyToClipboard title="Copy Palette Colours"
-        content={`${scheme.primary.toUpperCase()} ${scheme.tertiary.toUpperCase()} ${scheme.surface.toUpperCase()}`} />}
-      <Action title="Retry Colour Extraction" icon={Icon.ArrowClockwise}
-        shortcut={{ modifiers: ["cmd"], key: "r" }} onAction={() => setAttempt((value) => value + 1)} />
-    </>;
-  }
-
-  function swatch(id: string, name: string, scheme: Scheme | undefined, seed?: string, busy = false) {
-    const isPin = Boolean(seed && seed === pinned);
-    const starred = Boolean(seed && saved.some((a) => a.seed === seed));
-    const isCurrent = Boolean(scheme && scheme.primary === applied && (seed ? isPin : !pinned && wallpaper.current));
-    const status = busy || (!scheme && (loading || accentBusy || customBusy)) ? "Preparing…" : !scheme ? "Unavailable" : isPin || isCurrent ? "Current" : undefined;
-    const icon = scheme ? { source: Icon.CircleFilled, tintColor: scheme.primary } : Icon.Hourglass;
-    const tooltip = scheme ? `${name} · ${scheme.primary.toUpperCase()}${seed ? ` · from ${seed.toUpperCase()}` : ""}` : `Preparing ${name.toLowerCase()}…`;
-    const actions = <ActionPanel>
-        {(!scheme || busy) && <Action title={status === "Unavailable" ? "Retry Colour Preview" : "Preparing Colour…"} icon={Icon.Hourglass}
-          onAction={() => { if (status === "Unavailable") setAttempt((value) => value + 1); }} />}
-        {scheme && !busy && <Action title={seed ? `Apply ${name} Accent` : `Apply ${name} Palette`} icon={Icon.Wand}
-          onAction={() => applyAndClose(wallpaper.path, seed ? CUSTOM_INDEX : scheme.index, seed, applyOptions)} />}
-        {scheme && seed && !busy && <Action title={starred ? "Remove Saved Accent" : "Save Accent"}
-          icon={starred ? Icon.StarDisabled : Icon.Star}
-          shortcut={{ modifiers: ["cmd"], key: "f" }} onAction={() => toggleSaved(seed, name)} />}
-        {isPin && <Action title="Unpin Accent" icon={Icon.XMarkCircle} onAction={() => {
-          if (!clearCustomAccent()) {
-            void showToast({ style: Toast.Style.Failure, title: "Could not unpin accent" }).catch(() => undefined);
-            return;
-          }
-          setPinned("");
-          void showToast({ style: Toast.Style.Success, title: "Accent unpinned", message: "Choose a wallpaper palette to update the desktop." }).catch(() => undefined);
-        }} />}
-        {commonActions(scheme)}
-      </ActionPanel>;
-    return source === "wallpaper"
-      ? <List.Item key={id} id={id} title={name} icon={{ value: icon, tooltip }}
-          accessories={status ? [{ text: status }] : undefined} actions={actions}
-          detail={<List.Item.Detail markdown={wallpaperPreviewMarkdown(wallpaper)}
-            metadata={scheme && <List.Item.Detail.Metadata>
-              <List.Item.Detail.Metadata.Label title="Accent" text={scheme.primary.toUpperCase()}
-                icon={{ source: Icon.CircleFilled, tintColor: scheme.primary }} />
-              <List.Item.Detail.Metadata.Label title="Complement" text={scheme.tertiary.toUpperCase()}
-                icon={{ source: Icon.CircleFilled, tintColor: scheme.tertiary }} />
-              <List.Item.Detail.Metadata.Label title="Surface" text={scheme.surface.toUpperCase()}
-                icon={{ source: Icon.CircleFilled, tintColor: scheme.surface }} />
-            </List.Item.Detail.Metadata>} />} />
-      : <Grid.Item key={id} id={id} title={name} subtitle={status}
-          content={{ value: icon, tooltip }} actions={actions} />;
-  }
-
-  const search = query.trim().toLowerCase();
-  const options = source === "saved" ? saved
-    : ACCENT_SEEDS.filter((a) => source === "all" || search || QUIET_ACCENTS.has(a.name));
-  const visibleAccents = options.filter((a) => !search || typed ||
-    [a.name, a.seed, accents[a.seed]?.primary ?? "", "neutral" in a && a.neutral ? "neutral grey gray" : ""].join(" ").toLowerCase().includes(search));
-  const orderedSchemes = useMemo(() => {
-    const priority = (scheme: Scheme) => !pinned && wallpaper.current && scheme.primary === applied
-      ? 0 : scheme.index === 0 ? 1 : 2;
-    return [...schemes].sort((a, b) => priority(a) - priority(b));
-  }, [schemes, pinned, wallpaper.current, applied]);
-  const titles = nameSchemes(orderedSchemes.map((scheme) => scheme.primary));
-  const visibleSchemes = orderedSchemes.map((scheme, index) => ({ scheme, title: titles[index] }))
-    .filter(({ scheme, title }) => !search || typed || [title, scheme.primary, scheme.tertiary].join(" ").toLowerCase().includes(search));
-  const hasPin = Boolean(source === "wallpaper" && pinned && !typed &&
-    (!search || ["current", "pinned", pinned, applied].some((value) => value.includes(search))));
-  const choiceCount = typed ? 1 : source === "wallpaper"
-    ? visibleSchemes.length + Number(hasPin) : visibleAccents.length;
-  const hasItems = choiceCount > 0;
-  const typedName = ACCENT_SEEDS.find((accent) => accent.seed === typed)?.name
-    ?? nameOf(custom?.source === typed ? custom.primary : typed ?? "");
-
-  const props = {
-    filtering: false,
-    searchText: query,
-    onSearchTextChange: setQuery,
-    isLoading: loading || accentBusy || customBusy,
-    navigationTitle: `${wallpaper.title || readableName(wallpaper.name) || "Theme"}${neutral ? " · neutral" : ""}`,
-    searchBarPlaceholder: "Colour or hex…",
-    actions: <ActionPanel>{commonActions()}</ActionPanel>,
-  };
-  const EmptyView = source === "wallpaper" ? List.EmptyView : Grid.EmptyView;
-  const items = <>
-    {!loading && !accentBusy && !hasItems && <EmptyView icon={Icon.Swatch}
-      title={source === "saved" && !search ? "Keep your favourite accents here" : search ? "No matching colours" : "No colours from this image"}
-      description={source === "saved" && !search ? "Press Ctrl+F on an accent to save it." : "Try a colour name or a hex, or browse muted accents."}
-      actions={<ActionPanel><Action title="Browse Muted Accents" icon={Icon.Swatch}
-        onAction={() => { setSource("accents"); setQuery(""); }} />{commonActions()}</ActionPanel>} />}
-    {typed
-      ? swatch(`custom:${typed}`, typedName, custom?.source === typed ? custom : undefined, typed, waiting || customBusy)
-      : <>
-        {hasPin && swatch(`pin:${pinned}`, "Current accent", accents[pinned], pinned)}
-        {source === "wallpaper" ? visibleSchemes.map(({ scheme, title }) => swatch(`palette:${scheme.index}`, title, scheme))
-          : visibleAccents.map((accent) => swatch(`accent:${accent.seed}`, accent.name, accents[accent.seed], accent.seed))}
-      </>}
-  </>;
-
-  if (source === "wallpaper") return <List {...props} isShowingDetail={showPreview}>{items}</List>;
-  return <Grid {...props} columns={4} aspectRatio="4/3" fit={Grid.Fit.Contain} inset={Grid.Inset.Small}
-    searchBarAccessory={<Grid.Dropdown tooltip="Colour source" value={source}
-      onChange={(value) => { setSource(value as ThemeSource); setQuery(""); }}>
-      <Grid.Dropdown.Item title="Wallpaper" value="wallpaper" icon={Icon.Image} />
-      <Grid.Dropdown.Item title="Accents" value="accents" icon={Icon.Swatch} />
-      <Grid.Dropdown.Item title="All accents" value="all" icon={Icon.CircleFilled} />
-      {saved.length > 0 && <Grid.Dropdown.Item title={`Saved (${saved.length})`} value="saved" icon={Icon.Star} />}
-    </Grid.Dropdown>}>
-    {items}
-  </Grid>;
 }

@@ -1,21 +1,22 @@
 #!/usr/bin/env bash
 # Scan wallpapers and refresh thumbnails in a private cache.
 # Output one line per wallpaper:
-# <source_path>\t<name>\t<thumb_path>\t<is_current>\t<avg_color>\t<folder>\t<mtime>
+# <source_path>\t<name>\t<thumb_path>\t<is_current>\t<avg_color>\t<folder>\t<mtime>\t<brightness>
 set -uo pipefail
 
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" 2>/dev/null && pwd -P)
-# shellcheck source=thumb-lib.sh
-. "$script_dir/thumb-lib.sh"
+# shellcheck source=image-lib.sh
+. "$script_dir/image-lib.sh"
 
-dir="${WALLPAPER_DIR:-$HOME/Pictures/wallpaper}"
-scan_depth="${WALLPAPER_SCAN_DEPTH:-2}"
+# An explicit extension preference wins over local shell settings.
+dir="${1:-${WALLPAPER_DIR:-$HOME/Pictures/wallpaper}}"
+scan_depth="${WALLPAPER_SCAN_DEPTH:-3}"
 include_current="${WALLPAPER_INCLUDE_CURRENT:-1}"
 # The picker exposes these as a dropdown/checkbox, but keep the script safe and
 # useful when called directly from a shell with an invalid environment value.
 case "$scan_depth" in
     1|2|3|4|5) ;;
-    *) scan_depth=2 ;;
+    *) scan_depth=3 ;;
 esac
 case "$include_current" in
     0|1) ;;
@@ -28,9 +29,10 @@ esac
 # Stable absolute paths keep folder labels, metadata and thumbnail keys the
 # same for relative paths, symlinked folders and a trailing slash preference.
 dir=$(cd -- "$dir" && pwd -P) || exit 1
+case "$dir" in *$'\n'*|*$'\t'*) printf 'The library folder cannot contain tabs or newlines.\n' >&2; exit 1 ;; esac
 thumb_dir="$THUMB_DIR"
 state_dir="${XDG_STATE_HOME:-$HOME/.local/state}"
-wallpaper_state="${WALLPAPER_STATE_FILE:-$state_dir/theme/generated/wallpaper/path.txt}"
+wallpaper_state="${WALLPAPER_STATE_FILE:-$state_dir/wallpaper-picker/current}"
 mkdir -p "$thumb_dir"
 
 current=$(cat "$wallpaper_state" 2>/dev/null || true)
@@ -43,7 +45,10 @@ files=()
 declare -A MTIME=()
 [ "$include_current" = 1 ] && [ -n "$current" ] && [ -f "$current" ] && files+=("$current")
 
-while IFS=$'\t' read -r -d '' mtime f; do
+while IFS= read -r -d '' record; do
+    mtime=${record%%$'\t'*}
+    f=${record#*$'\t'}
+    case "$f" in *$'\n'*|*$'\t'*) continue ;; esac
     MTIME["$f"]=${mtime%.*}
     # When the current image is inside the selected directory it is part of the
     # ordinary library. The include-current switch only controls the special
@@ -51,7 +56,8 @@ while IFS=$'\t' read -r -d '' mtime f; do
     [ "$f" = "$current" ] && [ "$include_current" = 1 ] && continue
     files+=("$f")
 done < <(find "$dir" -maxdepth "$scan_depth" -type f \
-    \( -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.png' -o -iname '*.webp' \) \
+    \( -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.png' -o -iname '*.webp' \
+       -o -iname '*.mp4' -o -iname '*.webm' -o -iname '*.mkv' \) \
     -printf '%T@\t%p\0' 2>/dev/null | sort -z -t$'\t' -k2)
 
 # The current wallpaper can live outside $dir, so the walk above may not have
@@ -79,7 +85,7 @@ for p in sys.stdin.buffer.read().split(b"\n"):
 }
 
 # Hash from the prebuilt map when we have it, else fall back to the shared
-# reference implementation (identical output — see thumb-lib.sh).
+# reference implementation (identical output — see image-lib.sh).
 path_sha() {
     local h=${PATH_SHA["$1"]:-}
     [ -n "$h" ] || h=$(thumb_hash "$1")
@@ -128,10 +134,15 @@ for src in "${files[@]}"; do
     [ -z "$file_hash" ] && file_hash=$(thumb_hash "$src")
     dst="${thumb_dir}/${file_hash}.jpg"
     if ! thumb_is_fresh "$src" "$dst"; then
-        missing_src+=("$src")
-        missing_dst+=("$dst")
-        # Hand Vicinae the source meanwhile so a new image is visible immediately.
-        dst="$src"
+        # Vicinae cannot draw a video, so a new one is rendered now (one frame,
+        # once) instead of handing the grid its unreadable source meanwhile.
+        if ! is_live "$src" || ! ensure_thumb "$src" "$dst"; then
+            missing_src+=("$src")
+            missing_dst+=("$dst")
+            # A video must fall back to a still or a generic video icon, never
+            # ask Vicinae to decode the clip as an image.
+            if is_live "$src"; then dst=$(live_poster "$src") || dst="$src"; else dst="$src"; fi
+        fi
     fi
 
     # Inlined rather than calling color_is_fresh: that would be a fork per file
@@ -139,17 +150,22 @@ for src in "${files[@]}"; do
     # from an older extraction rule is skipped here and rewritten by the
     # background pass below.
     color_hint=""
+    brightness=""
     cached_color=""
     color_file="${thumb_dir}/${file_hash}.color"
     if [ -s "$color_file" ] && [ "$color_file" -nt "$src" ]; then
         { read -r cached_color < "$color_file"; } 2>/dev/null || cached_color=""
         case "$cached_color" in
-            "v${COLOR_VERSION} #"??????*) color_hint=${cached_color#* } ;;
+            "v${COLOR_VERSION} #"??????" "*)
+                color_hint=${cached_color#* }
+                brightness=${color_hint#* }
+                color_hint=${color_hint%% *}
+                ;;
         esac
     fi
     folder_for "$src"
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-        "$src" "${src##*/}" "$dst" "$is_current" "$color_hint" "$folder" "${MTIME["$src"]:-0}"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+        "$src" "${src##*/}" "$dst" "$is_current" "$color_hint" "$folder" "${MTIME["$src"]:-0}" "$brightness"
 done
 
 cleanup_cache() {
@@ -226,8 +242,8 @@ generate_color_hints() {
         thumb_is_fresh "$src" "$t" || continue
         (
             color_tmp="${c}.${BASHPID:-$$}.tmp"
-            hex=$(dominant_color "$t") || exit 0
-            if [ "${#hex}" -eq 7 ] && printf 'v%s %s\n' "$COLOR_VERSION" "$hex" >"$color_tmp"; then
+            hint=$(dominant_color "$t") || exit 0
+            if [[ $hint =~ ^#[[:xdigit:]]{6}\ [0-9]{1,3}$ ]] && printf 'v%s %s\n' "$COLOR_VERSION" "$hint" >"$color_tmp"; then
                 mv -f "$color_tmp" "$c"
             fi
             rm -f "$color_tmp"

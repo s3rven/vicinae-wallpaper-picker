@@ -1,5 +1,5 @@
 # shellcheck shell=bash
-# Per-output wallpaper routing for awww. Sourced by apply-wallpaper-theme.sh and
+# Per-output wallpaper routing for awww. Sourced by apply-wallpaper.sh and
 # restore-wallpaper.sh.
 #
 # Optional blackout: outputs whose name or description matches
@@ -9,12 +9,8 @@
 # wallpaper routes around them. Match on the description, not the connector:
 # USB-C monitors can re-enumerate between DP-1/DP-2/DP-3 across replugs.
 
-# Local, untracked settings (blackout match, reload command, ...). Plain shell
-# assignments; see the README.
-_wp_env="${XDG_CONFIG_HOME:-$HOME/.config}/wallpaper-picker/env"
-# shellcheck source=/dev/null
-[ -r "$_wp_env" ] && . "$_wp_env"
-unset _wp_env
+# shellcheck source=image-lib.sh
+. "$(dirname -- "${BASH_SOURCE[0]}")/image-lib.sh"
 
 AWWW_BLACKOUT_MATCH="${AWWW_BLACKOUT_MATCH:-}"
 AWWW_BLACKOUT_COLOR="${AWWW_BLACKOUT_COLOR:-0x000000}"
@@ -24,11 +20,10 @@ AWWW_BLACKOUT_COLOR="${AWWW_BLACKOUT_COLOR:-0x000000}"
 awww_ensure_ready() {
     command -v awww >/dev/null 2>&1 || return 127
     awww query >/dev/null 2>&1 && return 0
-    if ! pgrep -x awww-daemon >/dev/null 2>&1; then
-        command -v awww-daemon >/dev/null 2>&1 || return 127
-        # The long-lived daemon must never inherit the caller's apply lock.
-        awww-daemon 9>&- >/dev/null 2>&1 &
-    fi
+    command -v awww-daemon >/dev/null 2>&1 || return 127
+    # Processes in other users/sessions say nothing about this session's socket.
+    # A daemon that is already running can reject the duplicate startup safely.
+    awww-daemon 9>&- >/dev/null 2>&1 &
     local _attempt
     for _attempt in {1..20}; do
         sleep 0.1
@@ -83,6 +78,62 @@ awww_saved_fit_args() {
     printf '%s\n' --resize "$resize" --filter "$filter" --crop-gravity "$gravity"
 }
 
+# Live wallpapers: awww shows the video's first frame, and live-wallpaper.py
+# plays it above that with one mpvpaper per output, pausing it while windows
+# cover it (see that file). It runs as one transient user unit, so it outlives
+# whichever launcher started it and stops cleanly.
+# On hybrid-GPU laptops set WALLPAPER_LIVE_EGL_VENDOR to Mesa's glvnd JSON:
+# otherwise glvnd loads the NVIDIA driver first and the dGPU never sleeps.
+WALLPAPER_LIVE_MPV_OPTIONS="${WALLPAPER_LIVE_MPV_OPTIONS:-no-audio loop hwdec=auto-safe panscan=1.0}"
+WALLPAPER_LIVE_EGL_VENDOR="${WALLPAPER_LIVE_EGL_VENDOR:-}"
+_live_runtime="${XDG_RUNTIME_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}}/wallpaper-picker/runtime"
+_live_token="$_live_runtime/live-token"
+_live_player="$(dirname -- "${BASH_SOURCE[0]}")/live-wallpaper.py"
+
+live_stop() {
+    rm -f -- "$_live_token"
+    # Stills also work in sessions without systemd. Never wait indefinitely for
+    # an unavailable user bus just to set an image.
+    if command -v systemctl >/dev/null 2>&1; then
+        timeout 3 systemctl --user stop wallpaper-live.service >/dev/null 2>&1 || true
+    fi
+}
+
+live_require_tools() {
+    local tool
+    for tool in mpvpaper ffmpeg python3 systemctl systemd-run; do
+        command -v "$tool" >/dev/null 2>&1 || {
+            printf 'Live wallpapers require %s. Install it or choose a still image.\n' "$tool" >&2
+            return 127
+        }
+    done
+    if ! timeout 3 systemctl --user show-environment >/dev/null 2>&1; then
+        printf 'Live wallpapers require a running systemd user session. Choose a still image in this session.\n' >&2
+        return 1
+    fi
+}
+
+# live_start VIDEO OUTPUTS_CSV DELAY: start after awww's transition to the still
+# has finished, unless another switch has happened in the meantime.
+live_start() {
+    local video=$1 outputs=$2 delay=${3:-0} token="$$.$RANDOM" var
+    local -a env=()
+    # Only forward what is set: an empty vendor list leaves glvnd with no EGL
+    # driver at all, and the player reads the rest from its environment.
+    for var in WAYLAND_DISPLAY HYPRLAND_INSTANCE_SIGNATURE XDG_RUNTIME_DIR XDG_CACHE_HOME XDG_CONFIG_HOME XDG_STATE_HOME WALLPAPER_LIVE_MPV_OPTIONS; do
+        [ -n "${!var:-}" ] && env+=(-E "$var=${!var}")
+    done
+    [ -n "$WALLPAPER_LIVE_EGL_VENDOR" ] && env+=(-E "__EGL_VENDOR_LIBRARY_FILENAMES=$WALLPAPER_LIVE_EGL_VENDOR")
+    mkdir -p -- "$_live_runtime" || return 1
+    printf '%s\n' "$token" >"$_live_token" || return 1
+    (
+        sleep "$delay"
+        [ "$(cat "$_live_token" 2>/dev/null)" = "$token" ] || exit 0
+        systemd-run --user --quiet --collect --unit=wallpaper-live "${env[@]}" \
+            python3 "$(realpath -- "$_live_player")" run "$video" "$outputs"
+    ) 9>&- >/dev/null 2>&1 &
+}
+
 awww_apply_blackout() {
     local blackout
     blackout=$(awww_blackout_csv)
@@ -94,19 +145,33 @@ awww_apply_blackout() {
 # Return failure for either image or blackout sends, including an all-blackout
 # setup. A successful wallpaper send must not hide a failed blackout fill.
 awww_img_targeted() {
-    local image=$1
+    local image=$1 video=""
     shift
     local -a routes=()
     local wallpaper blackout rc=0
+    # Check optional dependencies before interrupting the current wallpaper.
+    if is_live "$image"; then
+        live_require_tools || return $?
+        video=$image
+        image=$(live_poster "$video") || return 1
+    fi
+    # Any switch replaces the running player; a video then shows its still here.
+    live_stop
     mapfile -t routes < <(_awww_routes)
     wallpaper=${routes[0]:-}
     blackout=${routes[1]:-}
     # Detect pacing from the same snapshot used for output routing. Explicit
     # frame-rate arguments still win, including scripted overrides.
-    local arg explicit_fps=false
+    local arg prev="" explicit_fps=false duration=0 ttype=""
     for arg in "$@"; do
         case "$arg" in --transition-fps|--transition-fps=*) explicit_fps=true ;; esac
+        case "$prev" in
+            --transition-duration) duration=$arg ;;
+            --transition-type) ttype=$arg ;;
+        esac
+        prev=$arg
     done
+    [ "$ttype" = none ] && duration=0
     if ! $explicit_fps; then
         set -- "$@" --transition-fps "${routes[2]:-60}"
     fi
@@ -118,6 +183,10 @@ awww_img_targeted() {
         fi
         awww img "$AWWW_BLACKOUT_COLOR" -o "$blackout" \
             --transition-type none >/dev/null 2>&1 || rc=$?
+    fi
+    if [ -n "$video" ] && [ "$rc" = 0 ] && { [ -z "$blackout" ] || [ -n "$wallpaper" ]; }; then
+        # No compositor snapshot (awww painted every output): mpvpaper's ALL.
+        live_start "$video" "${wallpaper:-ALL}" "$duration" || rc=$?
     fi
     return "$rc"
 }

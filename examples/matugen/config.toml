@@ -1,0 +1,12 @@
+# Optional starting point. The picker does not load this file.
+[config]
+version_check = false
+source_color_index = 0
+
+[config.wallpaper]
+set = false
+command = "true"
+
+[templates.kitty]
+input_path = "./kitty-colors.conf"
+output_path = "./generated/kitty-colors.conf"
