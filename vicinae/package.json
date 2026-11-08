@@ -23,6 +23,20 @@
       "mode": "view"
     },
     {
+      "name": "solid-colour",
+      "title": "Set Solid Colour",
+      "subtitle": "Wallpaper Picker",
+      "description": "Choose a solid background from presets or a custom hex colour.",
+      "keywords": [
+        "wallpaper",
+        "background",
+        "solid",
+        "colour",
+        "color"
+      ],
+      "mode": "view"
+    },
+    {
       "name": "toggle-live-wallpaper",
       "title": "Pause or Resume Live Wallpaper",
       "subtitle": "Wallpaper Picker",
@@ -63,6 +77,18 @@
     }
   ],
   "preferences": [
+    {
+      "name": "defaultAction",
+      "type": "dropdown",
+      "required": false,
+      "title": "Wallpaper click action",
+      "description": "Choose an accent from the image or apply immediately. Ctrl+Enter always offers the other action.",
+      "default": "palette",
+      "data": [
+        { "title": "Choose wallpaper colour", "value": "palette" },
+        { "title": "Set wallpaper immediately", "value": "apply" }
+      ]
+    },
     {
       "name": "wallpaperDirectory",
       "type": "directory",
@@ -198,9 +224,13 @@
       "type": "dropdown",
       "required": false,
       "title": "Wallpaper transition",
-      "description": "Animation used when applying a wallpaper.",
-      "default": "spotlight-wave",
+      "description": "Fast native awww effects. Auto duration is tuned for each effect.",
+      "default": "soft-fade",
       "data": [
+        {
+          "title": "Fade \u2014 quick and smooth",
+          "value": "soft-fade"
+        },
         {
           "title": "Spotlight wave \u2014 focused reveal",
           "value": "spotlight-wave"
@@ -218,8 +248,28 @@
           "value": "diagonal-wipe"
         },
         {
-          "title": "Soft fade \u2014 gentle crossfade",
-          "value": "soft-fade"
+          "title": "From left",
+          "value": "left"
+        },
+        {
+          "title": "From right",
+          "value": "right"
+        },
+        {
+          "title": "From top",
+          "value": "top"
+        },
+        {
+          "title": "From bottom",
+          "value": "bottom"
+        },
+        {
+          "title": "Random origin",
+          "value": "any"
+        },
+        {
+          "title": "Random effect",
+          "value": "random"
         },
         {
           "title": "None \u2014 apply instantly",
@@ -240,8 +290,16 @@
           "value": "auto"
         },
         {
+          "title": "0.2 s \u2014 snappy",
+          "value": "0.2"
+        },
+        {
           "title": "0.3 s \u2014 very fast",
           "value": "0.3"
+        },
+        {
+          "title": "0.4 s \u2014 gentle",
+          "value": "0.4"
         },
         {
           "title": "0.5 s \u2014 fast",
@@ -258,6 +316,14 @@
         {
           "title": "1.0 s \u2014 slow",
           "value": "1.0"
+        },
+        {
+          "title": "1.5 s",
+          "value": "1.5"
+        },
+        {
+          "title": "2.0 s",
+          "value": "2.0"
         }
       ]
     },

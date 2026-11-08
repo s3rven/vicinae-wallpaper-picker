@@ -11,4 +11,9 @@ if [ ! -f "$config" ]; then
     printf 'Create a matugen config first: %s\n' "$config" >&2
     exit 1
 fi
-matugen --config "$config" image "$image" --mode dark --source-color-index 0
+accent=${WALLPAPER_PICKER_ACCENT:-}
+if [[ "$accent" =~ ^\#[[:xdigit:]]{6}$ ]]; then
+    matugen --config "$config" color hex "$accent" --type scheme-fidelity --mode dark
+else
+    matugen --config "$config" image "${WALLPAPER_PICKER_THUMBNAIL:-$image}" --mode dark --source-color-index "${WALLPAPER_PICKER_PALETTE_INDEX:-0}" --resize-filter nearest
+fi

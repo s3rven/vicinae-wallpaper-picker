@@ -40,6 +40,7 @@ wallpaper_state="${WALLPAPER_STATE_FILE:-$state_dir/wallpaper-picker/current}"
 mkdir -p "$thumb_dir"
 
 current=$(cat "$wallpaper_state" 2>/dev/null || true)
+case "$current" in *$'\n'*|*$'\t'*) current="" ;; esac
 
 # mtime comes straight off the find walk (-printf '%T@') rather than a stat fork
 # per file — it's free here, and the picker's "recent" sort needs it. Records are
@@ -124,9 +125,6 @@ parallel=$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)
 [ "$parallel" -gt 8 ] && parallel=8
 [ "$parallel" -lt 2 ] && parallel=2
 
-missing_src=()
-missing_dst=()
-
 build_path_sha
 
 for src in "${files[@]}"; do
@@ -138,14 +136,15 @@ for src in "${files[@]}"; do
     [ -z "$file_hash" ] && file_hash=$(thumb_hash "$src")
     dst="${thumb_dir}/${file_hash}.jpg"
     if ! thumb_is_fresh "$src" "$dst"; then
-        # Vicinae cannot draw a video, so a new one is rendered now (one frame,
-        # once) instead of handing the grid its unreadable source meanwhile.
-        if ! is_live "$src" || ! ensure_thumb "$src" "$dst"; then
-            missing_src+=("$src")
-            missing_dst+=("$dst")
-            # A video must fall back to a still or a generic video icon, never
-            # ask Vicinae to decode the clip as an image.
-            if is_live "$src"; then dst=$(live_poster "$src") || dst="$src"; else dst="$src"; fi
+        # Never decode a clip before reporting the library: slow or damaged
+        # videos must not hold up the whole grid. Use a fresh cached poster,
+        # otherwise the UI recognizes the source extension as a video icon.
+        # The existing background pass and cache polling fill the preview in.
+        if is_live "$src"; then
+            dst="$LIVE_DIR/${file_hash}.png"
+            thumb_is_fresh "$src" "$dst" || dst="$src"
+        else
+            dst="$src"
         fi
     fi
 
@@ -159,13 +158,11 @@ for src in "${files[@]}"; do
     color_file="${thumb_dir}/${file_hash}.color"
     if [ -s "$color_file" ] && [ "$color_file" -nt "$src" ]; then
         { read -r cached_color < "$color_file"; } 2>/dev/null || cached_color=""
-        case "$cached_color" in
-            "v${COLOR_VERSION} #"??????" "*)
-                color_hint=${cached_color#* }
-                brightness=${color_hint#* }
-                color_hint=${color_hint%% *}
-                ;;
-        esac
+        if [[ "$cached_color" =~ $COLOR_HINT_RE ]]; then
+            color_hint=${cached_color#* }
+            brightness=${color_hint#* }
+            color_hint=${color_hint%% *}
+        fi
     fi
     folder_for "$src"
     printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
@@ -217,37 +214,37 @@ if [ "${WALLPAPER_PICKER_PRUNE_CACHE:-0}" = 1 ] && [ "$library_count" -gt 0 ]; t
     needs_cleanup=1
 fi
 
-refresh_thumbs() {
-    [ ${#THUMB_CMD[@]} -gt 0 ] || return
-    local i n=0
-    for i in "${!missing_src[@]}"; do
-        ensure_thumb "${missing_src[$i]}" "${missing_dst[$i]}" &
-        n=$((n + 1))
-        # Keep all workers busy: launch a new job the moment ANY finishes
-        # (wait -n) instead of draining the whole batch and idling fast cores.
-        if [ "$n" -ge "$parallel" ]; then wait -n 2>/dev/null || wait; n=$((n - 1)); fi
-    done
-    wait
-}
-
-# Extract and cache each wallpaper's dominant colour as a single hex string.
-# The picker sorts by its hue and filters by its colour group. Runs after refresh_thumbs
-# so the thumb is guaranteed to exist when we sample it — one magick call per
-# file against the small cached thumb, fast even on large batches.
-generate_color_hints() {
-    [ ${#THUMB_CMD[@]} -gt 0 ] || return
+# Finish the colour alongside each preview, so a slow clip cannot hold back
+# colours from still images that are already ready. Warm entries spawn no work.
+refresh_cache() {
     local src fh t c n=0
+    local -a ordered=() clips=()
+    # A batch of damaged clips must not occupy every worker before still images get a preview.
     for src in "${files[@]}"; do
+        if is_live "$src"; then clips+=("$src"); else ordered+=("$src"); fi
+    done
+    ordered+=("${clips[@]}")
+    for src in "${ordered[@]}"; do
         fh="${PATH_SHA["$src"]:-}"
         [ -z "$fh" ] && fh=$(thumb_hash "$src")
         t="${thumb_dir}/${fh}.jpg"
         c="${thumb_dir}/${fh}.color"
-        color_is_fresh "$src" "$c" && continue
-        thumb_is_fresh "$src" "$t" || continue
+        if [ ${#THUMB_CMD[@]} -gt 0 ]; then
+            thumb_is_fresh "$src" "$t" && color_is_fresh "$src" "$c" && continue
+        else
+            is_live "$src" || continue
+        fi
         (
+            if [ ${#THUMB_CMD[@]} -eq 0 ]; then
+                live_poster "$src" >/dev/null
+                exit
+            fi
+            ensure_thumb "$src" "$t" || exit 0
+            color_is_fresh "$src" "$c" && exit 0
             color_tmp="${c}.${BASHPID:-$$}.tmp"
             hint=$(dominant_color "$t") || exit 0
-            if [[ $hint =~ ^#[[:xdigit:]]{6}\ [0-9]{1,3}$ ]] && printf 'v%s %s\n' "$COLOR_VERSION" "$hint" >"$color_tmp"; then
+            line="v${COLOR_VERSION} $hint"
+            if [[ "$line" =~ $COLOR_HINT_RE ]] && printf '%s\n' "$line" >"$color_tmp"; then
                 mv -f "$color_tmp" "$c"
             fi
             rm -f "$color_tmp"
@@ -276,7 +273,6 @@ generate_color_hints() {
         flock -w 20 9 || exit 0
     fi
     [ "$needs_cleanup" = 1 ] && cleanup_cache
-    refresh_thumbs
-    generate_color_hints
+    refresh_cache
 ) >/dev/null 2>&1 &
 disown

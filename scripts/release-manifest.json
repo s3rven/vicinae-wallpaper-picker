@@ -6,7 +6,8 @@
     "import-live.sh",
     "live-wallpaper.py",
     "restore-wallpaper.sh",
-    "scan-wallpapers.sh"
+    "scan-wallpapers.sh",
+    "wallpaper-colours.sh"
   ],
   "source": [
     ".github/workflows/checks.yml",
@@ -42,6 +43,9 @@
     "examples/matugen/config.toml",
     "examples/matugen/kitty-colors.conf",
     "examples/matugen/post-apply.sh",
-    "tests/test_install.py"
+    "tests/test_install.py",
+    "vicinae/src/solid-colour.tsx",
+    "vicinae/src/wallpaper-colours.tsx",
+    "tests/test_palette.py"
   ]
 }

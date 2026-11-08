@@ -52,7 +52,7 @@ live_poster() {
         command -v ffmpeg >/dev/null 2>&1 || return 1
         mkdir -p "$LIVE_DIR" || return 1
         tmp="${dst%.png}.${BASHPID:-$$}.tmp.png"
-        if ! ffmpeg -nostdin -loglevel error -y -i "$1" -frames:v 1 "$tmp" 9>&- || ! mv -f "$tmp" "$dst"; then
+        if ! timeout --kill-after=1s 10s ffmpeg -nostdin -loglevel error -threads 1 -y -i "$1" -frames:v 1 "$tmp" 9>&- || ! mv -f "$tmp" "$dst"; then
             rm -f "$tmp"
             return 1
         fi
@@ -77,6 +77,7 @@ thumb_color_path() {
 # written by an older rule is ignored and rebuilt, which stops a collection from
 # ever being half-sorted by one rule and half by another.
 COLOR_VERSION=3
+COLOR_HINT_RE="^v${COLOR_VERSION} #[[:xdigit:]]{6} ([0-9]|[1-9][0-9]|100)$"
 
 # v3 adds the image's mean brightness (0-100, mean OKLab-style lightness of the
 # same 12-colour histogram) after the hex. The colour sort orders each colour
@@ -93,7 +94,7 @@ COLOR_VERSION=3
 # no chroma to find and still resolves to grey.
 dominant_color() {
     [ ${#THUMB_CMD[@]} -gt 0 ] || return 1
-    "${THUMB_CMD[@]}" "$1" -alpha remove -alpha off -resize '64x64!' \
+    MAGICK_THREAD_LIMIT=1 timeout --kill-after=1s 10s "${THUMB_CMD[@]}" "$1" -alpha remove -alpha off -resize '64x64!' \
         -colors 12 -depth 8 -format '%c' histogram:info:- 2>/dev/null | awk '
         # Hand-rolled rather than strtonum(): that is a gawk extension, and a
         # silent zero on mawk would mis-colour the whole library rather than fail.
@@ -143,10 +144,7 @@ color_is_fresh() {
     local line=""
     thumb_is_fresh "$1" "$2" || return 1
     { read -r line <"$2"; } 2>/dev/null || return 1
-    case "$line" in
-        "v${COLOR_VERSION} #"??????*) return 0 ;;
-        *) return 1 ;;
-    esac
+    [[ "$line" =~ $COLOR_HINT_RE ]]
 }
 
 # True when $2 is a usable thumb for source $1 (present, non-empty, not stale).
@@ -165,11 +163,29 @@ ensure_thumb() {
 
     mkdir -p "${dst%/*}" || return 1
     tmp="${dst}.${BASHPID:-$$}.tmp"
-    if "${THUMB_CMD[@]}" "$img" -auto-orient -strip \
+    # Read one frame: an animated WebP/PNG would otherwise write numbered JPEGs
+    # instead of $tmp, making the atomic rename fail and rebuilding forever.
+    # Open the exact path in the shell: ImageMagick expands glob characters in
+    # input filenames itself, even when the shell argument was quoted.
+    if MAGICK_THREAD_LIMIT=1 timeout --kill-after=1s 10s "${THUMB_CMD[@]}" '-[0]' -auto-orient -strip \
         -thumbnail "${THUMB_GEOMETRY}^" -gravity center -extent "$THUMB_GEOMETRY" \
-        -quality "$THUMB_QUALITY" "jpg:$tmp" 2>/dev/null && mv -f "$tmp" "$dst"; then
+        -quality "$THUMB_QUALITY" "jpg:$tmp" <"$img" 2>/dev/null && mv -f "$tmp" "$dst"; then
         return 0
     fi
     rm -f "$tmp"
     return 1
+}
+
+# Prints a seed colour for an image with no colour of its own, else nothing.
+# Matugen answers a black-and-white image with its #4285f4 fallback, which is
+# Google blue, not the image. The mean pixel keeps a grey image grey. The
+# palette preview and desktop theme hooks share this function, so both use the same seed.
+achromatic_seed() {
+    local seed
+    [ ${#THUMB_CMD[@]} -gt 0 ] && command -v matugen >/dev/null 2>&1 || return 0
+    [ "$(matugen image "$1" --show-source-colors --resize-filter nearest 2>/dev/null)" = '#4285f4' ] || return 0
+    seed=$("${THUMB_CMD[@]}" '-[0]' -alpha remove -alpha off -resize '1x1!' -depth 8 \
+        -format '#%[hex:p{0,0}]' info: <"$1" 2>/dev/null) || return 0
+    [[ "$seed" =~ ^#[[:xdigit:]]{6}$ ]] && printf '%s\n' "${seed,,}"
+    return 0
 }

@@ -29,6 +29,13 @@ The hook receives the original wallpaper path as `$1`. For a live wallpaper,
 always gets an image. The hook is limited to ten seconds. A hook failure is
 reported without undoing the wallpaper change. Restoring at login skips hooks.
 
+The colour step offers the image's matugen palettes and a set of accents. A
+palette sends `WALLPAPER_PICKER_PALETTE_INDEX` (the source colour, 0-3) and
+`WALLPAPER_PICKER_THUMBNAIL`, the image the preview was made from; this example
+passes both to `matugen image`. An accent or typed hex sends
+`WALLPAPER_PICKER_ACCENT` and uses `matugen color hex`. An accent stays pinned
+for later wallpaper changes until you choose a palette.
+
 To try the Kitty example, generate it once with
 `matugen --config /path/to/config.toml image /path/to/wallpaper.jpg --mode dark`,
 then add `include ../matugen/generated/kitty-colors.conf` to your Kitty config

@@ -27,10 +27,24 @@ const onPath = (cmd: string) =>
   });
 
 // ImageMagick improves thumbnails/colour filters; it is optional for stills.
-export function missingTools(options: { path?: string } = {}): string[] {
+export function missingTools(options: { path?: string; solid?: boolean } = {}): string[] {
   const need = [["bash"], ["awww"], ["flock"]];
+  if (options.solid) need.push(["magick", "convert"]);
   if (options.path && isLive(options.path)) need.push(["ffmpeg"], ["mpvpaper"], ["python3"], ["systemctl"], ["systemd-run"]);
   return need.filter((alternatives) => !alternatives.some(onPath)).map((alternatives) => alternatives.join(" or "));
+}
+
+export function imageToolsAvailable(): boolean {
+  return onPath("magick") || onPath("convert");
+}
+
+export function previewWorkPending(items: Wallpaper[], images = imageToolsAvailable()): boolean {
+  return items.some((w) => images ? w.thumb === w.path || !w.color : isLive(w.path) && w.thumb === w.path);
+}
+
+export function wallpaperPreview(wallpaper: Wallpaper, images: boolean): string | null {
+  if (isLive(wallpaper.thumb) || (images && wallpaper.thumb === wallpaper.path)) return null;
+  return wallpaper.thumb;
 }
 
 export function libraryDirectory(directory?: string): string {
@@ -87,7 +101,8 @@ export function isArchived(wallpaper: Pick<Wallpaper, "folder">): boolean {
   return /^(?:archive|old)(?:\/|$)/i.test(wallpaper.folder);
 }
 
-export function filterLibrary(items: Wallpaper[], filter: string, favourites: Set<string>): Wallpaper[] {
+export function filterLibrary(items: Wallpaper[], filter: string, favourites: Set<string>, colour = ""): Wallpaper[] {
+  if (colour) items = items.filter((w) => w.group === colour && Boolean(w.color));
   if (filter === "fav") return items.filter((w) => favourites.has(w.path));
   if (filter === "current") return items.filter((w) => w.current);
   if (filter === "archive") return items.filter(isArchived);
@@ -98,25 +113,80 @@ export function filterLibrary(items: Wallpaper[], filter: string, favourites: Se
   return filter.startsWith("c:") ? active.filter((w) => w.group === filter.slice(2)) : active;
 }
 
-// Keep the visible grid and shuffle pool on the same search results.
-export function searchLibrary(items: Wallpaper[], query: string): Wallpaper[] {
-  const normalise = (value: string) => value.normalize("NFKD").replace(/\p{M}/gu, "").toLowerCase();
-  const terms = normalise(query).trim().split(/\s+/).filter(Boolean);
-  if (!terms.length) return items;
-  const matches = (field: string, term: string) => {
-    let position = 0;
-    for (const character of term) {
-      const index = field.indexOf(character, position);
-      if (index < 0) return false;
-      position = index + character.length;
-    }
-    return true;
+const normaliseSearch = (value: string) => value.normalize("NFKD").replace(/\p{M}/gu, "").toLowerCase();
+type SearchField = { text: string; words: string[]; weight: number };
+type SearchEntry = { title: string; fields: SearchField[] };
+export type SearchIndex = WeakMap<Wallpaper, SearchEntry>;
+
+function searchEntry(w: Wallpaper): SearchEntry {
+  const field = (text: string, weight: number): SearchField => {
+    text = normaliseSearch(text);
+    return { text, words: text.split(/[^\p{L}\p{N}#]+/u).filter(Boolean), weight };
   };
-  return items.filter((w) => {
-    const fields = [w.name, w.title, w.folder, ...w.tags, w.group, w.color, w.resolution,
-      isLive(w.path) ? "live video" : "still image"].map(normalise);
-    return terms.every((term) => fields.some((field) => matches(field, term)));
-  });
+  return { title: normaliseSearch(w.title || prettyName(w.name)), fields: [
+    field(w.name, 0), field(prettyName(w.name), 0), field(w.title, 0), ...w.tags.map((tag) => field(tag, 0.25)),
+    field(w.folder, 2), field(w.group, 0.5), field(w.color, 0.5), field(w.resolution, 1),
+    field(isLive(w.path) ? "live video" : "still image", 1),
+  ] };
+}
+
+// Build once per scan, so typing only compares already-normalised fields.
+export function createSearchIndex(items: Wallpaper[]): SearchIndex {
+  return new WeakMap(items.map((w) => [w, searchEntry(w)]));
+}
+
+function searchScore(field: SearchField, term: string): number {
+  const { text, words, weight } = field;
+  if (text === term) return weight;
+  if (words.includes(term)) return 1 + weight;
+  if (text.startsWith(term)) return 2 + weight;
+  if (words.some((word) => word.startsWith(term))) return 3 + weight;
+  const substring = text.indexOf(term);
+  if (substring >= 0) return 4 + weight + substring / 1000;
+  let position = 0, skipped = 0;
+  for (const character of term) {
+    const at = text.indexOf(character, position);
+    if (at < 0) return Infinity;
+    skipped += at - position;
+    position = at + character.length;
+  }
+  return 12 + weight + skipped / Math.max(1, term.length);
+}
+
+// Search relevance comes first; the selected sort still breaks equal scores.
+export function searchLibrary(items: Wallpaper[], query: string, index?: SearchIndex): Wallpaper[] {
+  const normalised = normaliseSearch(query).trim().replace(/\s+/g, " ");
+  const terms = normalised.split(" ").filter(Boolean);
+  if (!terms.length) return items;
+  const scored = items.map((wallpaper, order) => {
+    const entry = index?.get(wallpaper) ?? searchEntry(wallpaper);
+    let score = entry.title === normalised ? -3 : 0;
+    for (const term of terms) {
+      let best = Infinity;
+      for (const field of entry.fields) {
+        best = Math.min(best, searchScore(field, term));
+        if (best === 0) break;
+      }
+      score += best;
+      if (!Number.isFinite(score)) break;
+    }
+    return { wallpaper, order, score };
+  }).filter(({ score }) => Number.isFinite(score));
+  // Loose letter-order matches only stand in when nothing matches literally:
+  // otherwise "car" also brought back "ascii-art" and "camera".
+  const literal = scored.filter(({ score }) => score < 12);
+  return (literal.length ? literal : scored)
+    .sort((a, b) => a.score - b.score || a.order - b.order).map(({ wallpaper }) => wallpaper);
+}
+
+const nameCollator = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
+export function compareWallpaperNames(a: Wallpaper, b: Wallpaper): number {
+  return nameCollator.compare(a.title || a.name, b.title || b.name);
+}
+
+export function pinFavourites(items: Wallpaper[], favourites: Set<string>): Wallpaper[] {
+  if (!favourites.size) return items;
+  return [...items.filter((w) => favourites.has(w.path)), ...items.filter((w) => !favourites.has(w.path))];
 }
 
 // scan-wallpapers.sh emits one tab-separated record per wallpaper:
@@ -162,7 +232,7 @@ export async function scanWallpapers(options: ScanOptions = {}): Promise<Wallpap
       thumb: p[2] && p[2].length > 0 ? p[2] : p[0],
       current: p[3] === "1",
       color,
-      folder: p[5]?.trim() || "Root",
+      folder: p[5]?.length ? p[5] : "Root",
       mtime: Number.parseInt(p[6] ?? "0", 10) || 0,
       // A missing or malformed cache hint is still a neutral-looking item. Use
       // the same fallback the colour sections use so the dropdown, sections and
@@ -197,6 +267,10 @@ export function hueOf(hex: string): number {
 }
 
 export type ApplyOptions = {
+  // Undefined keeps the current accent; an empty string restores automatic image colours.
+  accent?: string;
+  // A matugen source colour (0-3) of this image; also clears a pinned accent.
+  palette?: number;
   transition?: string;
   duration?: string;
   fps?: string;
@@ -208,6 +282,49 @@ export type ApplyOptions = {
   filter?: string;
   cropGravity?: string;
 };
+
+export const TRANSITIONS = [
+  { id: "soft-fade", title: "Fade", description: "A short, smooth crossfade." },
+  { id: "diagonal-wipe", title: "Diagonal wipe", description: "A quick diagonal sweep." },
+  { id: "spotlight-wave", title: "Spotlight", description: "A circle opens from the centre." },
+  { id: "iris-close", title: "Iris", description: "A circle closes towards the centre." },
+  { id: "wave-sweep", title: "Wave", description: "A wavy sweep from top to bottom." },
+  { id: "left", title: "From left", description: "A reveal from left to right." },
+  { id: "right", title: "From right", description: "A reveal from right to left." },
+  { id: "top", title: "From top", description: "A reveal from top to bottom." },
+  { id: "bottom", title: "From bottom", description: "A reveal from bottom to top." },
+  { id: "any", title: "Random origin", description: "A circle opens from a different point each time." },
+  { id: "random", title: "Random effect", description: "awww chooses an effect for each change." },
+  { id: "none", title: "None", description: "Apply instantly." },
+] as const;
+export type Transition = (typeof TRANSITIONS)[number]["id"];
+export function transitionOf(value: unknown): Transition {
+  return TRANSITIONS.some((transition) => transition.id === value) ? value as Transition : "soft-fade";
+}
+export const TRANSITION_DURATIONS = ["auto", "0.2", "0.3", "0.4", "0.5", "0.65", "0.8", "1.0", "1.5", "2.0"] as const;
+export type TransitionDuration = (typeof TRANSITION_DURATIONS)[number];
+
+export const COLOUR_SWATCHES: Record<string, string> = {
+  red: "#e66571", orange: "#e69959", yellow: "#e1ca68", green: "#80b97d",
+  teal: "#57b9ad", blue: "#6b9ddd", purple: "#a68bda", pink: "#d990bc", neutral: "#92969f",
+};
+
+// Files live with picker state, so Previous Wallpaper and login restore use the same apply pipeline.
+export async function createSolidWallpaper(raw: string): Promise<string> {
+  const colour = normaliseHex(raw);
+  if (!colour) throw new Error("Enter three or six hex digits, for example #4488ff.");
+  const directory = join(STATE_DIR, "wallpaper-picker", "colours");
+  mkdirSync(directory, { recursive: true, mode: 0o700 });
+  const path = join(directory, `colour-${colour.slice(1)}.png`);
+  if (existsSync(path)) return path;
+  const temporary = `${path}.${process.pid}.tmp`;
+  try {
+    await run(onPath("magick") ? "magick" : "convert",
+      ["-size", "16x16", `xc:${colour}`, `png:${temporary}`], { timeout: 10_000 });
+    renameSync(temporary, path);
+    return path;
+  } finally { rmSync(temporary, { force: true }); }
+}
 
 export function applyWallpaper(
   path: string,
@@ -224,10 +341,16 @@ export function applyWallpaper(
   }
   const args = [
     path,
-    process.env.WALLPAPER_PICKER_TRANSITION ?? options.transition ?? "spotlight-wave",
+    process.env.WALLPAPER_PICKER_TRANSITION ?? options.transition ?? "soft-fade",
   ];
   const env = { ...process.env };
   env.WALLPAPER_PICKER_LOG = "1";
+  if (options.accent !== undefined) {
+    const accent = options.accent === "" ? "" : normaliseHex(options.accent);
+    if (accent === null) return false;
+    env.WALLPAPER_PICKER_ACCENT = accent;
+  }
+  if (options.palette !== undefined) env.WALLPAPER_PICKER_PALETTE = String(options.palette);
   const setPreference = (name: string, value?: string) => {
     // Explicit environment variables stay a power-user override for scripts
     // and machine-wide defaults. "auto" means leave the backend's detection
@@ -264,10 +387,11 @@ export function applyWallpaper(
 // only offer valid values and the backend validates them again.
 export function commandOptions(): { scan: ScanOptions; apply: ApplyOptions } {
   const p = getPreferenceValues<Record<string, string | boolean | undefined>>();
+  const view = readView();
   const text = (key: string) => typeof p[key] === "string" ? p[key] as string : undefined;
   return {
     scan: { directory: text("wallpaperDirectory")?.trim() || undefined, depth: text("scanDepth"), includeCurrent: p.includeCurrent !== false },
-    apply: { transition: text("transition"), duration: text("transitionDuration"), resize: text("resizeMode"), cropGravity: text("cropGravity") },
+    apply: { transition: view.transition ?? text("transition"), duration: view.duration ?? text("transitionDuration"), resize: text("resizeMode"), cropGravity: text("cropGravity") },
   };
 }
 
@@ -278,6 +402,74 @@ export function normaliseHex(raw: string): string | null {
     return `#${t.toLowerCase().split("").map((c) => c + c).join("")}`;
   }
   return null;
+}
+
+// What a theme hook gets from one matugen source colour of the image (dark scheme).
+export type Palette = { index: number; primary: string; tertiary: string; surface: string };
+
+export function parsePalettes(output: string): Palette[] {
+  const seen = new Set<string>();
+  return output.split("\n").flatMap((line) => {
+    const m = /^([0-3])((?: #[0-9a-fA-F]{6}(?:[0-9a-fA-F]{2})?){3})$/.exec(line.trim());
+    if (!m) return [];
+    const [primary, tertiary, surface] = m[2].trim().split(" ").map((hex) => hex.slice(0, 7).toLowerCase());
+    // Two source colours can land on the same scheme; offer it once.
+    if (seen.has(primary + tertiary)) return [];
+    seen.add(primary + tertiary);
+    return [{ index: Number(m[1]), primary, tertiary, surface }];
+  });
+}
+
+export async function wallpaperPalettes(path: string): Promise<Palette[]> {
+  const { stdout } = await runScript("wallpaper-colours.sh", [path], 16 * 1024);
+  return parsePalettes(stdout);
+}
+
+function hslHex(h: number, s: number, l: number): string {
+  const a = s * Math.min(l, 1 - l);
+  const f = (n: number) => {
+    const k = (n + h / 30) % 12;
+    return Math.round((l - a * Math.max(-1, Math.min(k - 3, 9 - k, 1))) * 255).toString(16).padStart(2, "0");
+  };
+  return `#${f(0)}${f(8)}${f(4)}`;
+}
+
+// Accents are pinned as-is, so they are muted and light enough to read on a dark
+// surface. One saturation and lightness keeps every hue equally strong.
+export const ACCENTS: { name: string; hex: string; keywords: string[] }[] = [
+  ...([["Red", 0, ""], ["Orange", 28, "amber"], ["Yellow", 52, "gold"], ["Green", 120, "sage"],
+    ["Teal", 172, "cyan"], ["Sky", 202, "light blue"], ["Blue", 218, ""], ["Violet", 256, "purple lavender"],
+    ["Pink", 324, "rose"]] as const).map(([name, h, keywords]) => ({ name, hex: hslHex(h, 0.42, 0.66), keywords: keywords.split(" ") })),
+  { name: "Silver", hex: hslHex(220, 0.06, 0.8), keywords: ["grey", "gray", "neutral"] },
+  { name: "Stone", hex: hslHex(32, 0.1, 0.62), keywords: ["grey", "gray", "neutral", "warm"] },
+  { name: "Slate", hex: hslHex(214, 0.16, 0.55), keywords: ["grey", "gray", "neutral", "cool"] },
+];
+
+// "Deep Blue" / "Light Blue" when one image yields two blues.
+export function namePalettes(hexes: string[]): string[] {
+  const words: Record<number, string[]> = { 2: ["Deep", "Light"], 3: ["Deep", "Mid", "Light"], 4: ["Deepest", "Deep", "Light", "Lightest"] };
+  const names = hexes.map(nameOf);
+  const out = [...names];
+  for (const name of new Set(names)) {
+    const same = names.flatMap((n, i) => (n === name ? [i] : []));
+    if (same.length < 2) continue;
+    same.sort((a, b) => lightnessOf(hexes[a]) - lightnessOf(hexes[b]))
+      .forEach((i, rank) => { out[i] = `${words[same.length][rank]} ${name}`; });
+  }
+  return out;
+}
+
+export function readPaletteIndex(): number {
+  try {
+    const value = readFileSync(process.env.WALLPAPER_PICKER_SOURCE_INDEX || join(STATE_DIR, "wallpaper-picker", "source-index"), "utf8").trim();
+    return /^[0-3]$/.test(value) ? Number(value) : 0;
+  } catch { return 0; }
+}
+
+export function readAccent(): string | null {
+  try {
+    return normaliseHex(readFileSync(process.env.WALLPAPER_PICKER_CUSTOM_ACCENT || join(STATE_DIR, "wallpaper-picker", "custom-accent"), "utf8"));
+  } catch { return null; }
 }
 
 function rgbOf(hex: string): [number, number, number] | null {
@@ -368,6 +560,17 @@ export function vividnessOf(hex: string): number {
 const STATE_DIR =
   process.env.XDG_STATE_HOME || join(homedir(), ".local", "state");
 
+const solidCache = new Cache({ namespace: "solid-colour" });
+export function readSolidColour(): string {
+  try { return normaliseHex(solidCache.get("last") ?? "") ?? "#111827"; }
+  catch { return "#111827"; }
+}
+export function rememberSolidColour(value: string): void {
+  const hex = normaliseHex(value);
+  if (!hex) return;
+  try { solidCache.set("last", hex); } catch { /* colour history is optional */ }
+}
+
 export const FAVOURITES_FILE =
   process.env.WALLPAPER_PICKER_FAVOURITES || join(STATE_DIR, "wallpaper-picker", "favourites");
 
@@ -376,7 +579,6 @@ export function readFavourites(): Set<string> {
     return new Set(
       readFileSync(FAVOURITES_FILE, "utf8")
         .split("\n")
-        .map((l) => l.trim())
         .filter(Boolean),
     );
   } catch {
@@ -488,15 +690,23 @@ export function colourOrder(a: Wallpaper, b: Wallpaper): number {
 // Where the picker was left: the dropdown filter and the sort. Restored on the
 // next open, so "Live" or "Blue" stays picked until it is changed.
 const viewCache = new Cache({ namespace: "view" });
-export type View = { filter: string; sort: string };
+export type View = { filter: string; sort: string; colour?: string; transition?: Transition; duration?: string };
 
 export function readView(): Partial<View> {
   try {
     const parsed: unknown = JSON.parse(viewCache.get("v1") ?? "{}");
     const view = parsed as Record<string, unknown>;
+    const filter = typeof view?.filter === "string" ? view.filter : undefined;
+    const colour = typeof view?.colour === "string" ? view.colour : filter?.startsWith("c:") ? filter.slice(2) : undefined;
     return {
-      filter: typeof view?.filter === "string" ? view.filter : undefined,
+      filter: filter?.startsWith("c:") ? "" : filter,
       sort: typeof view?.sort === "string" ? view.sort : undefined,
+      ...(typeof colour === "string" && COLOR_GROUPS.includes(colour as typeof COLOR_GROUPS[number]) ? { colour } : {}),
+      ...(view?.transition === "doom" ? { transition: "soft-fade" as Transition, duration: "auto" }
+        : {
+          ...(TRANSITIONS.some((t) => t.id === view?.transition) ? { transition: view.transition as Transition } : {}),
+          ...(typeof view?.duration === "string" && TRANSITION_DURATIONS.includes(view.duration as TransitionDuration) ? { duration: view.duration } : {}),
+        }),
     };
   } catch {
     return {};

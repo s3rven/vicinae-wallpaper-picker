@@ -13,15 +13,23 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   COLOR_GROUPS,
+  COLOUR_SWATCHES,
   LIVE_POLICIES,
+  TRANSITIONS,
+  TRANSITION_DURATIONS,
+  type Transition,
+  type TransitionDuration,
   type LiveStatus,
   type ApplyOptions,
   type ScanOptions,
   Wallpaper,
   applyWallpaper,
   capitalise,
+  compareWallpaperNames,
   colourOrder,
+  createSearchIndex,
   filterLibrary,
+  imageToolsAvailable,
   isArchived,
   isLive,
   liveControl,
@@ -30,17 +38,23 @@ import {
   missingTools,
   nameOf,
   prettyName,
+  pinFavourites,
+  previewWorkPending,
   readableName,
   readCachedLibrary,
   readFavourites,
   readView,
   scanWallpapers,
   searchLibrary,
+  transitionOf,
   vividnessOf,
+  wallpaperPreview,
   writeCachedLibrary,
   writeFavourites,
   writeView,
 } from "./lib";
+import SolidColour from "./solid-colour";
+import WallpaperColours from "./wallpaper-colours";
 
 // Sorting and grouping are one control here, not two.
 //
@@ -54,8 +68,6 @@ import {
 // collection, where date order scatters unrelated colours side by side.
 type Sort = "recent" | "name" | "hue";
 type GroupBy = "date" | "folder" | "colour";
-type Transition = "spotlight-wave" | "iris-close" | "wave-sweep" | "diagonal-wipe" | "soft-fade" | "none";
-type TransitionDuration = "auto" | "0.3" | "0.5" | "0.65" | "0.8" | "1.0";
 type ResizeMode = "crop" | "fit" | "stretch" | "no";
 type CropGravity =
   | "top-left"
@@ -78,16 +90,7 @@ const SORTS: { id: Sort; title: string; icon: Icon; group: GroupBy }[] = [
   { id: "name", title: "Name", icon: Icon.Text, group: "folder" },
 ];
 
-const TRANSITIONS: { id: Transition; title: string; description: string }[] = [
-  { id: "spotlight-wave", title: "Spotlight wave", description: "A focused reveal from the centre." },
-  { id: "iris-close", title: "Iris close", description: "A closing circle - the reverse of Spotlight wave." },
-  { id: "wave-sweep", title: "Wave sweep", description: "A calm top-to-bottom sweep." },
-  { id: "diagonal-wipe", title: "Diagonal wipe", description: "A quick diagonal change." },
-  { id: "soft-fade", title: "Soft fade", description: "A gentle crossfade." },
-  { id: "none", title: "None", description: "Apply instantly without animation." },
-];
-
-const DURATION_VALUES: readonly TransitionDuration[] = ["auto", "0.3", "0.5", "0.65", "0.8", "1.0"];
+const DURATION_VALUES = TRANSITION_DURATIONS;
 const RESIZE_VALUES: readonly ResizeMode[] = ["crop", "fit", "stretch", "no"];
 const GRAVITY_VALUES: readonly CropGravity[] = [
   "center",
@@ -107,12 +110,6 @@ const COLUMN_VALUES: readonly ColumnCount[] = ["3", "4", "5", "6"];
 
 function preferenceValue<T extends string>(value: unknown, values: readonly T[], fallback: T): T {
   return typeof value === "string" && values.includes(value as T) ? (value as T) : fallback;
-}
-
-function transitionOf(value: unknown): Transition {
-  return TRANSITIONS.some((transition) => transition.id === value)
-    ? (value as Transition)
-    : "spotlight-wave";
 }
 
 // Coarse buckets rather than dates. Counting days would produce dozens of
@@ -262,6 +259,7 @@ function mergeThinBuckets(sections: Group[], minimum: number): Group[] {
 }
 
 type Prefs = {
+  defaultAction?: "palette" | "apply";
   columns?: ColumnCount;
   defaultSort?: Sort;
   transition?: Transition;
@@ -285,6 +283,7 @@ export default function SetWallpaper({ fallbackText = "" }: Partial<LaunchProps>
   // Both the filter and the sort start where the last session left them.
   const [remembered] = useState(readView);
   const [filter, setFilter] = useState(remembered.filter ?? "");
+  const [colour, setColour] = useState(remembered.colour ?? "");
   const prefs = getPreferenceValues<Prefs>();
   const initialSort: Sort =
     prefs.defaultSort === "name" || prefs.defaultSort === "recent" ? prefs.defaultSort : "hue";
@@ -298,10 +297,13 @@ export default function SetWallpaper({ fallbackText = "" }: Partial<LaunchProps>
     () => ({ directory: wallpaperDirectory, depth: scanDepth, includeCurrent }),
     [wallpaperDirectory, scanDepth, includeCurrent],
   );
-  const transition = transitionOf(prefs.transition);
+  const [transitionOverride, setTransitionOverride] = useState<Transition | undefined>(remembered.transition);
+  const [durationOverride, setDurationOverride] = useState<TransitionDuration | undefined>(() => remembered.duration ? preferenceValue(remembered.duration, DURATION_VALUES, "auto") : undefined);
+  const transition = transitionOf(transitionOverride ?? prefs.transition);
+  const duration = durationOverride ?? preferenceValue(prefs.transitionDuration, DURATION_VALUES, "auto");
   const applyOptions: ApplyOptions = {
     transition,
-    duration: preferenceValue(prefs.transitionDuration, DURATION_VALUES, "auto"),
+    duration,
     resize: preferenceValue(prefs.resizeMode, RESIZE_VALUES, "crop"),
     cropGravity: preferenceValue(prefs.cropGravity, GRAVITY_VALUES, "center"),
   };
@@ -317,11 +319,12 @@ export default function SetWallpaper({ fallbackText = "" }: Partial<LaunchProps>
     () => SORTS.find((s) => s.id === remembered.sort)?.id ?? initialSort,
   );
   // "Current" is a one-off lookup: remembered, the next open would show one tile.
-  useEffect(() => writeView({ filter: filter === "current" ? "" : filter, sort }), [filter, sort]);
+  useEffect(() => writeView({ filter: filter === "current" ? "" : filter, sort, colour, transition: transitionOverride, duration: durationOverride }), [filter, sort, colour, transitionOverride, durationOverride]);
   const [favourites, setFavourites] = useState<Set<string>>(() => readFavourites());
   const [live, setLive] = useState<LiveStatus | null>(null);
   const [selectedPath, setSelectedPath] = useState("");
   const [scanError, setScanError] = useState("");
+  const [canCreatePreviews] = useState(imageToolsAvailable);
 
   const columns = Number(preferenceValue(prefs.columns, COLUMN_VALUES, "4"));
   const mode = SORTS.find((s) => s.id === sort) ?? SORTS[0];
@@ -349,8 +352,8 @@ export default function SetWallpaper({ fallbackText = "" }: Partial<LaunchProps>
   // it warms so a newly added image gains its small preview and correct colour
   // group in this open picker. Cache-only scans never start another worker.
   const pollCache = useCallback((list: Wallpaper[], request: number, attempt = 0) => {
-    const delays = [1000, 2000, 4000, 8000, 16000];
-    if (attempt >= delays.length || !list.some((w) => w.thumb === w.path || !w.color)) return;
+    const delays = [500, 1000, 2000, 4000, 8000, 8000, 8000, 8000, 8000, 8000, 8000, 8000];
+    if (attempt >= delays.length || !previewWorkPending(list, canCreatePreviews)) return;
     cachePollTimer.current = setTimeout(() => {
       cachePollTimer.current = null;
       if (!alive.current || request !== scanRequest.current) return;
@@ -367,7 +370,7 @@ export default function SetWallpaper({ fallbackText = "" }: Partial<LaunchProps>
           if (alive.current && request === scanRequest.current) pollCache(list, request, attempt + 1);
         });
     }, delays[attempt]);
-  }, [scanOptions]);
+  }, [scanOptions, canCreatePreviews]);
 
   // The scan is the single source of truth for the library, so refreshing is
   // the same code path whether it runs on open or from cmd+R - the only
@@ -384,6 +387,8 @@ export default function SetWallpaper({ fallbackText = "" }: Partial<LaunchProps>
         if (!alive.current || request !== scanRequest.current) return;
         setScanError("");
         setWallpapers(list);
+        // Only a removed folder expires. An empty favourite/live/current filter remains selected.
+        setFilter((current) => current.startsWith("f:") && !list.some((w) => w.folder === current.slice(2)) ? "" : current);
         writeCachedLibrary(list, scanOptions);
         pollCache(list, request);
         if (announce) {
@@ -430,34 +435,32 @@ export default function SetWallpaper({ fallbackText = "" }: Partial<LaunchProps>
 
   const sorted = useMemo(() => {
     const src = [...wallpapers];
-    if (sort === "name") return src.sort((a, b) => (a.title || a.name).localeCompare(b.title || b.name));
+    if (sort === "name") return src.sort(compareWallpaperNames);
     if (sort === "hue") return src.sort(colourOrder);
     return src.sort((a, b) => b.mtime - a.mtime || a.name.localeCompare(b.name));
   }, [wallpapers, sort]);
 
+  const colourScope = useMemo(() => colour ? wallpapers.filter((w) => w.color && w.group === colour) : wallpapers, [wallpapers, colour]);
   const folders = useMemo(() => {
     const counts = new Map<string, number>();
-    for (const w of wallpapers) if (!isArchived(w)) counts.set(w.folder, (counts.get(w.folder) ?? 0) + 1);
+    for (const w of wallpapers) if (!isArchived(w)) counts.set(w.folder, 0);
+    for (const w of colourScope) if (!isArchived(w)) counts.set(w.folder, (counts.get(w.folder) ?? 0) + 1);
     return [...counts.entries()].sort((a, b) => folderLabel(a[0]).localeCompare(folderLabel(b[0])));
-  }, [wallpapers]);
+  }, [wallpapers, colourScope]);
 
-  const currentCount = useMemo(() => wallpapers.filter((w) => w.current).length, [wallpapers]);
-  const archiveCount = useMemo(() => wallpapers.filter(isArchived).length, [wallpapers]);
-  const activeCount = wallpapers.length - archiveCount;
+  const currentCount = useMemo(() => colourScope.filter((w) => w.current).length, [colourScope]);
+  const archiveCount = useMemo(() => colourScope.filter(isArchived).length, [colourScope]);
+  const activeCount = colourScope.length - archiveCount;
   const favouriteCount = useMemo(
-    () => wallpapers.filter((w) => favourites.has(w.path)).length,
-    [wallpapers, favourites],
+    () => colourScope.filter((w) => favourites.has(w.path)).length,
+    [colourScope, favourites],
   );
 
-  // Built from what the library actually contains, so the rail never offers an
-  // empty bucket - and each entry carries a real swatch from its own bucket
-  // rather than a hardcoded idea of what "teal" looks like. The most saturated
-  // member is the one that looks like its label; an average of the family comes
-  // out mud.
+  const baseFiltered = useMemo(() => filterLibrary(sorted, filter, favourites), [sorted, filter, favourites]);
+  // Keep every colour available while detection warms, and count within the chosen collection.
   const colours = useMemo(() => {
     const acc = new Map<string, { count: number; swatch: string; score: number }>();
-    for (const w of wallpapers) {
-      if (isArchived(w)) continue;
+    for (const w of baseFiltered) {
       if (!w.group || !w.color) continue;
       const seen = acc.get(w.group) ?? { count: 0, swatch: w.color, score: -1 };
       seen.count += 1;
@@ -468,28 +471,15 @@ export default function SetWallpaper({ fallbackText = "" }: Partial<LaunchProps>
       }
       acc.set(w.group, seen);
     }
-    return COLOR_GROUPS.filter((g) => acc.has(g)).map((g) => ({ name: g, ...acc.get(g)! }));
-  }, [wallpapers]);
+    return COLOR_GROUPS.map((g) => ({ name: g, ...(acc.get(g) ?? { count: 0, swatch: COLOUR_SWATCHES[g] }) }));
+  }, [baseFiltered]);
 
-  const filtered = useMemo(() => filterLibrary(sorted, filter, favourites), [sorted, filter, favourites]);
-  const shown = useMemo(() => searchLibrary(filtered, browseMode ? "" : query), [filtered, browseMode, query]);
+  const filtered = useMemo(() => filterLibrary(sorted, filter, favourites, colour), [sorted, filter, favourites, colour]);
+  const searchIndex = useMemo(() => createSearchIndex(wallpapers), [wallpapers]);
+  const shown = useMemo(() => searchLibrary(filtered, browseMode ? "" : query, searchIndex), [filtered, browseMode, query, searchIndex]);
   const searching = !browseMode && query.trim().length > 0;
 
-  // A remembered filter can go stale: the folder was emptied, the last star was
-  // removed. Fall back to everything rather than open on an empty grid, but only
-  // once colours are known, or a cold colour cache would drop "Blue".
-  useEffect(() => {
-    if (filter && !loading && wallpapers.length > 0 && filtered.length === 0 && wallpapers.every((w) => w.color)) {
-      setFilter("");
-    }
-  }, [filter, loading, wallpapers, filtered]);
-
   const randomCandidates = useMemo(() => shown.filter((w) => !w.current && !isLive(w.path)), [shown]);
-
-  const selected = useMemo(
-    () => shown.find((wallpaper) => wallpaper.path === selectedPath),
-    [shown, selectedPath],
-  );
 
   // Favourites ride at the top of the unfiltered library and are taken out of
   // the sections below it, so the star is worth pressing without any tile ever
@@ -497,6 +487,7 @@ export default function SetWallpaper({ fallbackText = "" }: Partial<LaunchProps>
   // already answered "which subset", and re-splitting that subset by a second
   // rule would be two questions in one list.
   const groups = useMemo(() => {
+    if (searching) return [{ key: "results", title: "Search Results", items: shown }];
     const now = Date.now();
     const pinned = filter === "" ? shown.filter((w) => favourites.has(w.path)) : [];
     const rest = pinned.length > 0 ? shown.filter((w) => !favourites.has(w.path)) : shown;
@@ -504,9 +495,21 @@ export default function SetWallpaper({ fallbackText = "" }: Partial<LaunchProps>
     return pinned.length > 0
       ? [{ key: "favourites", title: "Favourites", items: pinned }, ...sections]
       : sections;
-  }, [shown, mode.group, favourites, filter, columns]);
+  }, [shown, mode.group, favourites, filter, columns, searching]);
 
-  const flatItems = useMemo(() => groups.flatMap((group) => group.items), [groups]);
+  const flatItems = useMemo(() => filter === "" && !searching ? pinFavourites(shown, favourites) : shown, [shown, favourites, filter, searching]);
+  const selected = useMemo(() => shown.find((w) => w.path === selectedPath) ??
+    (layoutMode === "flat" ? flatItems[0] : groups[0]?.items[0]), [shown, selectedPath, flatItems, groups, layoutMode]);
+
+  function showAllWallpapers() {
+    setFilter("");
+    setColour("");
+    setQuery("");
+  }
+
+  function clearFiltersAction() {
+    return <Action title="Clear Search and Filters" icon={Icon.XMarkCircle} onAction={showAllWallpapers} />;
+  }
 
   function toggleFavourite(path: string) {
     const next = new Set(favourites);
@@ -524,7 +527,7 @@ export default function SetWallpaper({ fallbackText = "" }: Partial<LaunchProps>
     void liveStatus().then((s) => alive.current && setLive(s));
   }, []);
   const hasLive = useMemo(() => wallpapers.some((w) => isLive(w.path)), [wallpapers]);
-  const liveCount = useMemo(() => wallpapers.filter((w) => !isArchived(w) && isLive(w.path)).length, [wallpapers]);
+  const liveCount = useMemo(() => colourScope.filter((w) => !isArchived(w) && isLive(w.path)).length, [colourScope]);
 
   async function controlLive(next: Partial<LiveStatus>, args: string[], title: string) {
     if (!(await liveControl(...args))) {
@@ -539,6 +542,28 @@ export default function SetWallpaper({ fallbackText = "" }: Partial<LaunchProps>
     setBrowseMode((current) => !current);
   }
 
+  function colourActions() {
+    return (
+      <ActionPanel.Submenu title={colour ? `Colour: ${capitalise(colour)}` : "Filter by Colour"} icon={Icon.Swatch} shortcut={{ modifiers: ["cmd", "shift"], key: "f" }}>
+        <Action title="All Colours" icon={colour ? Icon.Layers : Icon.Check} onAction={() => setColour("")} />
+        {colours.map((c) => <Action key={c.name} title={`${capitalise(c.name)} (${c.count})`}
+          icon={colour === c.name ? Icon.Check : { source: Icon.CircleFilled, tintColor: c.swatch }} onAction={() => setColour(c.name)} />)}
+      </ActionPanel.Submenu>
+    );
+  }
+
+  function transitionActions() {
+    return (
+      <ActionPanel.Submenu title={`Transition: ${TRANSITIONS.find((t) => t.id === transition)?.title}`} icon={Icon.Play}>
+        {TRANSITIONS.map((t) => <Action key={t.id} title={t.title} icon={t.id === transition ? Icon.Check : Icon.Play} onAction={() => setTransitionOverride(t.id)} />)}
+        <ActionPanel.Submenu title={`Duration: ${duration === "auto" ? "Auto" : `${duration} s`}`} icon={Icon.Clock}>
+          {DURATION_VALUES.map((value) => <Action key={value} title={value === "auto" ? "Auto" : `${value} s`} icon={value === duration ? Icon.Check : Icon.Clock} onAction={() => setDurationOverride(value)} />)}
+        </ActionPanel.Submenu>
+        {(transitionOverride || durationOverride) && <Action title="Use Extension Defaults" icon={Icon.ArrowClockwise} onAction={() => { setTransitionOverride(undefined); setDurationOverride(undefined); }} />}
+      </ActionPanel.Submenu>
+    );
+  }
+
   // Shared by every tile so the sections cannot drift apart from each other.
   //
   // Grouped rather than listed flat: the first section is what enter and
@@ -547,8 +572,16 @@ export default function SetWallpaper({ fallbackText = "" }: Partial<LaunchProps>
   // for the eye: wallpaper actions stay separate from library controls.
   function tileActions(w: Wallpaper) {
     const starred = favourites.has(w.path);
+    const chooseColour = prefs.defaultAction !== "apply";
+    const colourAction = (
+      <Action.Push title="Choose Wallpaper Colour" icon={Icon.Swatch}
+        shortcut={chooseColour ? undefined : { modifiers: ["cmd"], key: "enter" }}
+        target={<WallpaperColours key={w.path} wallpaper={w} onApply={(choice) => applyAndClose(w.path, { ...applyOptions, ...choice })} />} />
+    );
     const wallpaperAction = (
-      <Action title="Set Wallpaper" icon={Icon.Image} onAction={() => void applyAndClose(w.path, applyOptions)} />
+      <Action title="Set Wallpaper" icon={Icon.Image}
+        shortcut={chooseColour ? { modifiers: ["cmd"], key: "enter" } : undefined}
+        onAction={() => void applyAndClose(w.path, applyOptions)} />
     );
     // Draws from what the dropdown is showing, not the whole library, so the
     // filter is the knob: "Colours > Blue" then Ctrl+Shift+R is a random blue
@@ -556,7 +589,7 @@ export default function SetWallpaper({ fallbackText = "" }: Partial<LaunchProps>
     // keep "changing" to the same picture.
     const randomAction = randomCandidates.length > 0 && (
       <Action
-        title={searching ? "Set Random from Search Results" : filter === "" ? "Set Random Wallpaper" : `Set Random from ${filterLabel}`}
+        title={searching ? "Set Random from Search Results" : colour ? `Set Random ${capitalise(colour)} Wallpaper` : filter === "" ? "Set Random Wallpaper" : `Set Random from ${filterLabel}`}
         icon={Icon.Shuffle}
         shortcut={{ modifiers: ["cmd", "shift"], key: "r" }}
         onAction={() => {
@@ -568,8 +601,11 @@ export default function SetWallpaper({ fallbackText = "" }: Partial<LaunchProps>
     return (
       <ActionPanel>
         <ActionPanel.Section>
-          {wallpaperAction}
+          {chooseColour ? colourAction : wallpaperAction}
+          {chooseColour ? wallpaperAction : colourAction}
           {randomAction}
+          <Action.Push title="Set Solid Colour" icon={Icon.Swatch} target={<SolidColour options={applyOptions} />} />
+          {transitionActions()}
         </ActionPanel.Section>
         <ActionPanel.Section title="Wallpaper">
           <Action
@@ -585,6 +621,8 @@ export default function SetWallpaper({ fallbackText = "" }: Partial<LaunchProps>
             shortcut={{ modifiers: ["cmd"], key: "o" }}
           />
           {w.source && <Action.Open title="Open Source Page" icon={Icon.Globe01} target={w.source} />}
+          {w.color && <Action title={`More ${capitalise(w.group)} Wallpapers`} icon={{ source: Icon.CircleFilled, tintColor: w.color }} onAction={() => setColour(w.group)} />}
+          {w.color && <Action.CopyToClipboard title="Copy Wallpaper Colour" icon={Icon.Swatch} content={w.color} />}
           <Action.ShowInFinder title="Reveal in File Manager" icon={Icon.Folder} path={w.path} select />
           <Action.CopyToClipboard
             title="Copy Path"
@@ -593,6 +631,9 @@ export default function SetWallpaper({ fallbackText = "" }: Partial<LaunchProps>
           />
         </ActionPanel.Section>
         <ActionPanel.Section title="View">
+          {(filter || colour || searching) && clearFiltersAction()}
+          {colourActions()}
+          {colour && <Action title="Clear Colour Filter" icon={Icon.Swatch} onAction={() => setColour("")} />}
           {/* A submenu rather than the cycle this used to be: cmd+S three times
               to reach the sort you wanted is a guessing game, and the cycle's
               title could only ever name the NEXT order, never the current one.
@@ -677,18 +718,15 @@ export default function SetWallpaper({ fallbackText = "" }: Partial<LaunchProps>
     const starred = favourites.has(w.path) && filter !== "fav";
     const subtitle = w.current ? (starred ? "★ Current" : "Current") : starred ? "★ Favourite" : undefined;
     const name = w.title || readableName(w.name);
+    const preview = wallpaperPreview(w, canCreatePreviews);
 
     return (
       <Grid.Item
         key={w.path}
         id={w.path}
-        content={{ value: isLive(w.thumb) ? Icon.Video : w.thumb, tooltip: [name || prettyName(w.name), isLive(w.path) ? "Live" : "", w.folder !== "Root" ? folderLabel(w.folder) : "", w.resolution].filter(Boolean).join(" · ") }}
+        content={{ value: preview ?? (isLive(w.path) ? Icon.Video : Icon.Image), tooltip: [name || prettyName(w.name), isLive(w.path) ? "Live" : "", w.folder !== "Root" ? folderLabel(w.folder) : "", w.resolution, !preview ? "Preview pending · Ctrl+R to retry" : ""].filter(Boolean).join(" · ") }}
         title={subtitle ? "" : undefined}
         subtitle={subtitle}
-        keywords={[w.name, name, w.folder, ...w.tags, w.group, w.color ? nameOf(w.color) : undefined, isLive(w.path) ? "live" : undefined].filter(
-          (k): k is string => Boolean(k),
-        )}
-        actions={tileActions(w)}
       />
     );
   }
@@ -719,8 +757,32 @@ export default function SetWallpaper({ fallbackText = "" }: Partial<LaunchProps>
               ? folderLabel(filter.slice(2))
               : folderLabel(filter);
 
+  function emptyActions() {
+    if (wallpapers.length === 0 && scanError) return (
+      <ActionPanel>
+        <Action title="Open Wallpaper Picker Preferences" icon={Icon.Cog}
+          onAction={() => void openExtensionPreferences().catch(() => undefined)} />
+        <Action title="Refresh Library" icon={Icon.ArrowClockwise} shortcut={{ modifiers: ["cmd"], key: "r" }} onAction={() => refresh(true)} />
+        <Action.Push title="Set Solid Colour" icon={Icon.Swatch} target={<SolidColour options={applyOptions} />} />
+      </ActionPanel>
+    );
+    return (
+      <ActionPanel>
+        {searching && <Action title="Clear Search" icon={Icon.MagnifyingGlass} onAction={() => setQuery("")} />}
+        {(filter || colour || searching) && clearFiltersAction()}
+        <Action.Push title="Set Solid Colour" icon={Icon.Swatch} target={<SolidColour options={applyOptions} />} />
+        {colourActions()}
+        {transitionActions()}
+        <Action title="Open Wallpaper Picker Preferences" icon={Icon.Cog}
+          onAction={() => void openExtensionPreferences().catch(() => undefined)} />
+        <Action title="Refresh Library" icon={Icon.ArrowClockwise} shortcut={{ modifiers: ["cmd"], key: "r" }} onAction={() => refresh(true)} />
+      </ActionPanel>
+    );
+  }
+
   return (
     <Grid
+      actions={selected ? tileActions(selected) : emptyActions()}
       isLoading={loading}
       columns={columns}
       aspectRatio={ASPECT}
@@ -729,28 +791,24 @@ export default function SetWallpaper({ fallbackText = "" }: Partial<LaunchProps>
       filtering={false}
       searchText={browseMode ? "" : query}
       onSearchTextChange={browseMode ? () => undefined : setQuery}
-      navigationTitle="Wallpapers"
+      navigationTitle={`Wallpapers${colour ? ` · ${capitalise(colour)}` : ""} · ${shown.length}`}
       onSelectionChange={(id) => setSelectedPath(id || "")}
       searchBarPlaceholder={
         browseMode
           ? selected
-            ? `Enter to set ${describe(selected)}… (Ctrl+Shift+B to search)`
+            ? `Enter to ${prefs.defaultAction === "apply" ? "set" : "choose a colour for"} ${describe(selected)}… (Ctrl+Shift+B to search)`
             : "Browse mode — arrow keys to move, Ctrl+Shift+B to search…"
-          : "Search wallpapers, scenes or artists…"
+          : colour ? `Search ${colour} wallpapers… Ctrl+Shift+F for colours` : "Search wallpapers… Ctrl+Shift+F for colours"
       }
       searchBarAccessory={
-        <Grid.Dropdown tooltip="Narrow the library" value={filter} onChange={setFilter}>
+        <Grid.Dropdown tooltip={colour ? `Collections · ${capitalise(colour)} wallpapers` : "Narrow the library"} value={filter} onChange={setFilter}>
           <Grid.Dropdown.Section title="Library">
-            <Grid.Dropdown.Item title={`All (${activeCount})`} value="" icon={Icon.Layers} />
-            {liveCount > 0 && <Grid.Dropdown.Item title={`Live (${liveCount})`} value="live" icon={Icon.Video} />}
-            {liveCount > 0 && <Grid.Dropdown.Item title={`Stills (${activeCount - liveCount})`} value="stills" icon={Icon.Image} />}
-            {favouriteCount > 0 && (
-              <Grid.Dropdown.Item title={`Favourites (${favouriteCount})`} value="fav" icon={Icon.Star} />
-            )}
-            {currentCount > 0 && (
-              <Grid.Dropdown.Item title={`Current (${currentCount})`} value="current" icon={Icon.CheckCircle} />
-            )}
-            {archiveCount > 0 && <Grid.Dropdown.Item title={`Archive (${archiveCount})`} value="archive" icon={Icon.Box} />}
+            <Grid.Dropdown.Item title={`All${colour && filter === "" ? ` · ${capitalise(colour)}` : ""} (${activeCount})`} value="" icon={Icon.Layers} />
+            {(hasLive || filter === "live") && <Grid.Dropdown.Item title={`Live (${liveCount})`} value="live" icon={Icon.Video} />}
+            <Grid.Dropdown.Item title={`Stills (${activeCount - liveCount})`} value="stills" icon={Icon.Image} />
+            <Grid.Dropdown.Item title={`Favourites (${favouriteCount})`} value="fav" icon={Icon.Star} />
+            <Grid.Dropdown.Item title={`Current (${currentCount})`} value="current" icon={Icon.CheckCircle} />
+            {(archiveCount > 0 || filter === "archive") && <Grid.Dropdown.Item title={`Archive (${archiveCount})`} value="archive" icon={Icon.Box} />}
           </Grid.Dropdown.Section>
           <Grid.Dropdown.Section title="Collections">
             {folders.map(([name, count]) => (
@@ -762,16 +820,6 @@ export default function SetWallpaper({ fallbackText = "" }: Partial<LaunchProps>
               />
             ))}
           </Grid.Dropdown.Section>
-          <Grid.Dropdown.Section title="Colours">
-            {colours.map((c) => (
-              <Grid.Dropdown.Item
-                key={c.name}
-                title={`${capitalise(c.name)} (${c.count})`}
-                value={`c:${c.name}`}
-                icon={{ source: Icon.CircleFilled, tintColor: c.swatch }}
-              />
-            ))}
-          </Grid.Dropdown.Section>
         </Grid.Dropdown>
       }
     >
@@ -780,22 +828,12 @@ export default function SetWallpaper({ fallbackText = "" }: Partial<LaunchProps>
           icon={Icon.Folder}
           title="Could not load the wallpaper library"
           description={scanError}
-          actions={
-            <ActionPanel>
-              <Action
-                title="Open Wallpaper Picker Preferences"
-                icon={Icon.Cog}
-                onAction={() => void openExtensionPreferences().catch(() => undefined)}
-              />
-              <Action title="Refresh Library" icon={Icon.ArrowClockwise} onAction={() => refresh(true)} />
-            </ActionPanel>
-          }
         />
       )}
       {!loading && shown.length === 0 && !(wallpapers.length === 0 && scanError) && (
         <Grid.EmptyView
           icon={filter === "fav" ? Icon.Star : filter === "current" ? Icon.CheckCircle : Icon.Image}
-          title={searching ? "No matching wallpapers" : filter === "fav" ? "No favourites yet" : filter === "current" ? "No current wallpaper" : `Nothing in ${filterLabel}`}
+          title={searching ? "No matching wallpapers" : colour ? `No ${capitalise(colour)} Wallpapers in ${filterLabel}` : filter === "fav" ? "No favourites yet" : filter === "current" ? "No current wallpaper" : `Nothing in ${filterLabel}`}
           description={
             searching
               ? "Try another search or clear it to see this collection."
@@ -803,16 +841,11 @@ export default function SetWallpaper({ fallbackText = "" }: Partial<LaunchProps>
                 ? "Press Ctrl+F on any wallpaper to keep it at the top of the library."
                 : filter === "current"
                   ? "Set a wallpaper from the picker to see it here."
-                  : `Pick another collection or colour, or add images to ${libraryDirectory(wallpaperDirectory)}.`
-          }
-          actions={
-            <ActionPanel>
-              {searching && <Action title="Clear Search" icon={Icon.MagnifyingGlass} onAction={() => setQuery("")} />}
-              <Action title="Show All Wallpapers" icon={Icon.Layers} onAction={() => { setFilter(""); setQuery(""); }} />
-              <Action title="Open Wallpaper Picker Preferences" icon={Icon.Cog}
-                onAction={() => void openExtensionPreferences().catch(() => undefined)} />
-              <Action title="Refresh Library" icon={Icon.ArrowClockwise} onAction={() => refresh(true)} />
-            </ActionPanel>
+                  : colour && !canCreatePreviews
+                    ? "Install ImageMagick, then refresh the library to detect wallpaper colours."
+                  : colour && wallpapers.some((w) => !w.color)
+                    ? "Wallpaper colours are still being detected. Previews update as they finish; Ctrl+R retries detection."
+                    : `Pick another collection or colour, or add images to ${libraryDirectory(wallpaperDirectory)}.`
           }
         />
       )}

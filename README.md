@@ -50,6 +50,7 @@ Node.js/npm. Installs and `--check` also check the desktop tools below.
 | awww and awww-daemon | Set wallpapers and animate transitions |
 | Bash 4.4+, coreutils, findutils, `flock` from util-linux | Backend scripts |
 | ImageMagick (`magick` or `convert`), recommended | Small thumbnails and colour filters; stills work without it |
+| matugen and jq, optional | Palette previews in the colour step |
 | Python 3, optional for stills | Faster scans and Hyprland monitor routing |
 | mpvpaper, ffmpeg, Python 3 and a systemd user session, optional | Live wallpapers |
 | ffprobe, optional | Prepare downloaded videos with `import-live.sh` |
@@ -77,10 +78,20 @@ favourites and local settings are kept outside the checkout.
 - Searchable thumbnail grid, favourites pinned first, and collections from
   subfolders. Archive/Old folders have their own filter.
 - Filter by collection, colour, favourites, current wallpaper, live or still.
+  **Ctrl+Shift+F** opens colour swatches with counts; combine a colour with a
+  collection or favourites. Colour choices stay available while detection warms.
   Sort by colour, modification date or name; the picker remembers your filter
   and sort. Search matches names, titles, tags, folders and colour names.
-- Spotlight, iris, wave, wipe and fade transitions; adjustable duration, fit
-  and crop anchor.
+  Exact names and words lead search results, with fuzzy matches below them.
+  Flat layout keeps the chosen sort across folders; names sort naturally
+  (for example, Night 2 before Night 10).
+  Empty favourites and other library filters stay selected until you change them.
+- Set a solid background from colour presets or a custom `#RGB` / `#RRGGBB`
+  value with **Set Solid Colour**, in the launcher or the picker's action panel.
+  The form remembers the last colour you submitted.
+- Fast native fade, spotlight, iris, wave, directional wipe and random
+  transitions. Change the effect and duration directly in the action panel;
+  your choice also applies to Random and Previous Wallpaper.
 - Set a random still from the current search and filter, or use **Random
   Wallpaper** on a keybind to shuffle the whole active library. Videos and the
   current wallpaper are excluded from random selection.
@@ -89,16 +100,29 @@ favourites and local settings are kept outside the checkout.
   Hyprland. Pause policy is configurable in the action panel.
 - Open full size, reveal in the file manager, open a source link or copy a path.
 - Cached thumbnails and colours, with background refresh while the grid is open.
+  Stills first show a placeholder while their small preview is built, avoiding
+  hundreds of full-size image loads on a new library. Without ImageMagick,
+  still images continue to display directly.
+  New videos first show a video icon while their preview is rendered, so opening
+  a library does not wait for every clip to decode. Animated WebP previews use
+  their first frame.
+  Colours become available with each completed preview. Decoder timeouts and
+  limited worker threads keep a damaged file from holding up the whole pass;
+  malformed colour-cache entries are rebuilt automatically.
 - Applies and login restores share a lock. Failed applies preserve the previous
   state and attempt to restore the previous image.
+  Rapid choices keep the latest waiting selection instead of replaying every
+  queued wallpaper change.
 
 ## Keys
 
 | Key | Action |
 |---|---|
-| Enter | Set wallpaper |
+| Enter | Choose a wallpaper's accent colour, then apply |
+| Ctrl+Enter | Set immediately (or open colours when immediate apply is the default) |
 | Ctrl+Shift+R | Random still from the current search/filter |
 | Ctrl+F | Add/remove favourite |
+| Ctrl+Shift+F | Filter by colour, within the current collection |
 | Ctrl+S | Choose sort order |
 | Ctrl+Shift+B | Switch search/browse mode |
 | Ctrl+Shift+P | Pause/resume live wallpaper |
@@ -128,6 +152,39 @@ For Sway, use `exec` with that script path. If you set `XDG_DATA_HOME`, use its
 `vicinae/extensions/wallpaper-picker/assets/backend/restore-wallpaper.sh` path.
 It starts awww-daemon when needed. Restoring does not run post-apply hooks.
 
+## Transitions and colours
+
+Open a wallpaper to choose its colours. **From This Wallpaper** lists up to four
+matugen palettes of the image, each previewed with the accent, complement and
+surface your theme will get; the preview reads the thumbnail cache and does not
+generate themes. **Accents** are muted presets that stay pinned for later
+wallpapers until you choose a palette again. Type a `#RGB` / `#RRGGBB` hex in the
+search bar for a custom accent. Choices are sent to your optional theming hook.
+Palette previews need matugen and jq; without them the list offers **Automatic**.
+In preferences, **Wallpaper click action** can switch back to immediate apply;
+Ctrl+Enter offers the other action. **Ctrl+R** reloads the palettes.
+Collection counts follow the selected colour;
+the gallery footer shows how many wallpapers match the current view.
+
+Open the action panel and choose **Transition** to pick an effect or duration.
+**Use Extension Defaults** returns both to the extension preferences. The
+**None** effect changes images immediately.
+
+Fade is the default, at 0.28 seconds. Wipes take about 0.32 seconds, wave
+0.38 seconds, and circular reveals 0.4 seconds. All effects use awww directly,
+with frame pacing matched to your display and a quick ease-out curve.
+**Auto** picks the effect's tuned duration; choose 0.2 seconds for a shorter
+animation. Existing Doom selections switch to Fade.
+
+Colour filtering needs ImageMagick. While it detects a new library, the colour
+menu keeps its swatches and updates their counts. A selected colour is kept
+even if it currently has no matches; **All Colours** clears it without changing
+the collection. **Clear Colour Filter** also clears it directly from the action
+panel. **Copy Wallpaper Colour** copies an image's dominant hex value.
+
+Solid colours are saved as small images in the picker's state directory, so
+Previous Wallpaper, login restore and transitions work with them too.
+
 ## Local settings and hooks
 
 Optional settings belong in
@@ -149,6 +206,11 @@ A post-apply hook can run matugen or another tool. The picker does not generate
 application themes, edit app configs or reload desktop applications. See the
 [separate matugen setup example](examples/matugen/README.md). Hook failures
 report an error while keeping the successfully set wallpaper.
+
+Hooks receive `WALLPAPER_PICKER_ACCENT` with the selected or previously pinned
+`#RRGGBB` seed, or an empty string for automatic image colours.
+`WALLPAPER_PICKER_ACCENT_CHANGED=1` identifies an explicit colour choice;
+immediate, random and previous applies keep the saved choice and send `0`.
 
 ## Live wallpapers
 
@@ -182,6 +244,7 @@ hypridle hooks, to stop decoding while the screen is locked or asleep.
 Supported still formats: JPEG, PNG and WebP. Subfolders are scanned to the depth
 chosen in preferences. Folder paths can contain spaces and Unicode. Filenames
 containing tabs/newlines are skipped because the scanner uses a record format.
+Thumbnail rendering treats names containing `*`, `?` or brackets as literal paths.
 
 An optional `.wallpaper-library.json` in the wallpaper folder adds searchable
 titles, tags, source links and resolution labels. Keys are relative paths:

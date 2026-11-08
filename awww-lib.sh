@@ -91,6 +91,12 @@ _live_token="$_live_runtime/live-token"
 _live_player="$(dirname -- "${BASH_SOURCE[0]}")/live-wallpaper.py"
 
 live_stop() {
+    # A still-to-still change has no player to stop; keep it off the systemd round trip.
+    if [ ! -e "$_live_token" ]; then
+        local previous=""
+        { IFS= read -r previous <"${WALLPAPER_STATE_FILE:-${XDG_STATE_HOME:-$HOME/.local/state}/wallpaper-picker/current}"; } 2>/dev/null || true
+        is_live "$previous" || return 0
+    fi
     rm -f -- "$_live_token"
     # Stills also work in sessions without systemd. Never wait indefinitely for
     # an unavailable user bus just to set an image.
@@ -177,10 +183,10 @@ awww_img_targeted() {
     fi
     if [ -z "$blackout" ]; then
         awww img "$image" "$@" || rc=$?
-    else
-        if [ -n "$wallpaper" ]; then
-            awww img "$image" -o "$wallpaper" "$@" || rc=$?
-        fi
+    elif [ -n "$wallpaper" ]; then
+        awww img "$image" -o "$wallpaper" "$@" || rc=$?
+    fi
+    if [ -n "$blackout" ]; then
         awww img "$AWWW_BLACKOUT_COLOR" -o "$blackout" \
             --transition-type none >/dev/null 2>&1 || rc=$?
     fi
