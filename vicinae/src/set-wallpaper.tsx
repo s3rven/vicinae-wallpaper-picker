@@ -9,6 +9,7 @@ import {
   getPreferenceValues,
   openExtensionPreferences,
   showToast,
+  useNavigation,
 } from "@vicinae/api";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -323,6 +324,11 @@ export default function SetWallpaper({ fallbackText = "" }: Partial<LaunchProps>
   const [favourites, setFavourites] = useState<Set<string>>(() => readFavourites());
   const [live, setLive] = useState<LiveStatus | null>(null);
   const [selectedPath, setSelectedPath] = useState("");
+  // The panel below is rebuilt only after Vicinae receives the next render (throttled
+  // to ~16 ms), so Enter right after an arrow key runs the previous tile's panel.
+  // Its handlers act on the tile Vicinae last reported instead.
+  const reported = useRef("");
+  const { push } = useNavigation();
   const [scanError, setScanError] = useState("");
   const [canCreatePreviews] = useState(imageToolsAvailable);
 
@@ -571,17 +577,21 @@ export default function SetWallpaper({ fallbackText = "" }: Partial<LaunchProps>
   // third changes the view itself. The panel is searchable, so the grouping is
   // for the eye: wallpaper actions stay separate from library controls.
   function tileActions(w: Wallpaper) {
+    const target = () => shown.find((x) => x.path === reported.current) ?? w;
     const starred = favourites.has(w.path);
     const chooseColour = prefs.defaultAction !== "apply";
     const colourAction = (
-      <Action.Push title="Choose Wallpaper Colour" icon={Icon.Swatch}
+      <Action title="Choose Wallpaper Colour" icon={Icon.Swatch}
         shortcut={chooseColour ? undefined : { modifiers: ["cmd"], key: "enter" }}
-        target={<WallpaperColours key={w.path} wallpaper={w} onApply={(choice) => applyAndClose(w.path, { ...applyOptions, ...choice })} />} />
+        onAction={() => {
+          const t = target();
+          push(<WallpaperColours key={t.path} wallpaper={t} onApply={(choice) => applyAndClose(t.path, { ...applyOptions, ...choice })} />);
+        }} />
     );
     const wallpaperAction = (
       <Action title="Set Wallpaper" icon={Icon.Image}
         shortcut={chooseColour ? { modifiers: ["cmd"], key: "enter" } : undefined}
-        onAction={() => void applyAndClose(w.path, applyOptions)} />
+        onAction={() => void applyAndClose(target().path, applyOptions)} />
     );
     // Draws from what the dropdown is showing, not the whole library, so the
     // filter is the knob: "Colours > Blue" then Ctrl+Shift+R is a random blue
@@ -612,7 +622,7 @@ export default function SetWallpaper({ fallbackText = "" }: Partial<LaunchProps>
             title={starred ? "Remove from Favourites" : "Add to Favourites"}
             icon={starred ? Icon.StarDisabled : Icon.Star}
             shortcut={{ modifiers: ["cmd"], key: "f" }}
-            onAction={() => toggleFavourite(w.path)}
+            onAction={() => toggleFavourite(target().path)}
           />
           <Action.Open
             title="Open Full Size"
@@ -792,7 +802,7 @@ export default function SetWallpaper({ fallbackText = "" }: Partial<LaunchProps>
       searchText={browseMode ? "" : query}
       onSearchTextChange={browseMode ? () => undefined : setQuery}
       navigationTitle={`Wallpapers${colour ? ` · ${capitalise(colour)}` : ""} · ${shown.length}`}
-      onSelectionChange={(id) => setSelectedPath(id || "")}
+      onSelectionChange={(id) => { reported.current = id || ""; setSelectedPath(id || ""); }}
       searchBarPlaceholder={
         browseMode
           ? selected

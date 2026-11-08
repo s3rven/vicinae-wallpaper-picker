@@ -31,6 +31,25 @@ class ScanRecords(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         return {row[0]: row for row in (line.split('\t') for line in result.stdout.splitlines())}
 
+    def test_opt_in_prune_keeps_live_entries_and_drops_orphans_and_retired_caches(self):
+        image = self.library / 'kept.png'
+        image.touch()
+        thumbs = self.home / 'cache/wallpaper-picker/thumbs'
+        thumbs.mkdir(parents=True)
+        kept = hashlib.sha1(str(image).encode()).hexdigest()
+        keep = [thumbs / f'{kept}.{ext}' for ext in ('jpg', 'schemes-v1')]
+        drop = [thumbs / f'gone.{ext}' for ext in ('jpg', 'color', 'schemes-v1')] + [thumbs / f'{kept}.palette-v1']
+        for file in keep + drop:
+            file.write_text('x')
+            os.utime(file, (time.time() + 60, time.time() + 60))
+        self.scan(WALLPAPER_PICKER_CACHE_ONLY='0', WALLPAPER_PICKER_PRUNE_CACHE='1')
+        for _ in range(100):
+            if not any(file.exists() for file in drop):
+                break
+            time.sleep(0.05)
+        self.assertEqual([file for file in drop if file.exists()], [])
+        self.assertTrue(all(file.exists() for file in keep))
+
     def test_spaces_unicode_and_record_delimiters(self):
         good = self.library / 'rain #1 (夜).PNG'
         for file in (good, self.library / 'bad\tname.png', self.library / 'bad\nname.png'):

@@ -183,12 +183,14 @@ cleanup_cache() {
         thumb_for "$src"
     done | sort >"$keep_file"
 
-    find "$thumb_dir" -maxdepth 1 -type f \( -name '*.jpg' -o -name '*.color' \) -print 2>/dev/null \
-        | sort >"$cached_file"
+    # palette-v1 is the retired swatch cache; never kept, so pruning removes it.
+    find "$thumb_dir" -maxdepth 1 -type f \( -name '*.jpg' -o -name '*.color' -o -name '*.schemes-v1' -o -name '*.palette-v1' \) \
+        -print 2>/dev/null | sort >"$cached_file"
 
     {
         cat "$keep_file"
         sed 's/[.]jpg$/.color/' "$keep_file"
+        sed 's/[.]jpg$/.schemes-v1/' "$keep_file"
     } | sort -u >"${keep_file}.all"
 
     # xargs splits a cache path containing spaces into unrelated arguments.
