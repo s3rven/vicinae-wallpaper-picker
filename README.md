@@ -108,7 +108,7 @@ favourites and local settings are kept outside the checkout.
 | Key | Action |
 |---|---|
 | Enter | Choose colours, then apply |
-| Ctrl+Enter | Set immediately (or open colours when immediate apply is the default) |
+| Shift+Enter | Set immediately (or open colours when immediate apply is the default) |
 | Ctrl+Shift+R | Random still from the current search/filter |
 | Ctrl+F | Add/remove favourite |
 | Ctrl+Shift+F | Filter by colour, within the current collection |
@@ -156,7 +156,7 @@ It starts awww-daemon when needed. Restoring does not run post-apply hooks.
 Previews read the thumbnail cache and never generate a theme. They need matugen
 and jq; without them the list offers **Automatic** and the accents. **Ctrl+R**
 reloads the palettes. To skip this step, set **Wallpaper click action** to
-immediate apply in preferences; **Ctrl+Enter** always offers the other action.
+immediate apply in preferences; **Shift+Enter** always offers the other action.
 
 The colour filter (**Ctrl+Shift+F**) needs ImageMagick. A chosen colour stays
 selected even with no matches; **All Colours** or **Clear Colour Filter** resets

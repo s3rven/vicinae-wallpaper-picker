@@ -82,7 +82,7 @@
       "type": "dropdown",
       "required": false,
       "title": "Wallpaper click action",
-      "description": "Choose an accent from the image or apply immediately. Ctrl+Enter always offers the other action.",
+      "description": "Choose an accent from the image or apply immediately. Shift+Enter always offers the other action.",
       "default": "palette",
       "data": [
         { "title": "Choose wallpaper colour", "value": "palette" },

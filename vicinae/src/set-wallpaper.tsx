@@ -572,17 +572,18 @@ export default function SetWallpaper({ fallbackText = "" }: Partial<LaunchProps>
 
   // Shared by every tile so the sections cannot drift apart from each other.
   //
-  // Grouped rather than listed flat: the first section is what enter and
-  // cmd+enter already do, the second acts on the file under the cursor and the
+  // Grouped rather than listed flat: the first section is what Enter and
+  // Shift+Enter already do, the second acts on the file under the cursor and the
   // third changes the view itself. The panel is searchable, so the grouping is
   // for the eye: wallpaper actions stay separate from library controls.
   function tileActions(w: Wallpaper) {
     const target = () => shown.find((x) => x.path === reported.current) ?? w;
     const starred = favourites.has(w.path);
     const chooseColour = prefs.defaultAction !== "apply";
+    // No shortcut props: Vicinae binds the first two actions to Enter and
+    // Shift+Enter itself, and ignored the Ctrl+Enter these used to ask for.
     const colourAction = (
       <Action title="Choose Wallpaper Colour" icon={Icon.Swatch}
-        shortcut={chooseColour ? undefined : { modifiers: ["cmd"], key: "enter" }}
         onAction={() => {
           const t = target();
           push(<WallpaperColours key={t.path} wallpaper={t} onApply={(choice) => applyAndClose(t.path, { ...applyOptions, ...choice })} />);
@@ -590,7 +591,6 @@ export default function SetWallpaper({ fallbackText = "" }: Partial<LaunchProps>
     );
     const wallpaperAction = (
       <Action title="Set Wallpaper" icon={Icon.Image}
-        shortcut={chooseColour ? { modifiers: ["cmd"], key: "enter" } : undefined}
         onAction={() => void applyAndClose(target().path, applyOptions)} />
     );
     // Draws from what the dropdown is showing, not the whole library, so the
