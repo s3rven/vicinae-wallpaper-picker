@@ -77,8 +77,9 @@ favourites and local settings are kept outside the checkout.
 
 ## Features
 
-- **Pictures first.** The grid shows thumbnails only; names live in tooltips
-  and search. Favourites are pinned to the top.
+- **Pictures first.** The grid shows thumbnails only and opens on your current
+  wallpaper, with favourites after it. The footer names the selected one;
+  names also live in tooltips and search.
 - **Collections and filters.** Subfolders become collections, and Archive/Old
   folders get their own filter. Filter by colour (**Ctrl+Shift+F**), favourites,
   current, live or still, and combine a colour with a collection. The picker

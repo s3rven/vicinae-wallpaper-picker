@@ -138,8 +138,11 @@ try {
 
   const numbered = [10, 2, 1].map((n) => ({ ...wallpaper, path: `/night-${n}.jpg`, name: `night-${n}.jpg`, title: `Night ${n}` }));
   assert.deepEqual(numbered.sort(lib.compareWallpaperNames).map((w) => w.title), ["Night 1", "Night 2", "Night 10"]);
-  assert.deepEqual(lib.pinFavourites(numbered, new Set([numbered[1].path])).map((w) => w.title), ["Night 2", "Night 1", "Night 10"]);
-  assert.equal(lib.pinFavourites(numbered, new Set()), numbered);
+  assert.deepEqual(lib.pinnedFirst(numbered, new Set([numbered[1].path])).map((w) => w.title), ["Night 2", "Night 1", "Night 10"]);
+  assert.equal(lib.pinnedFirst(numbered, new Set()), numbered);
+  const withCurrent = numbered.map((w, i) => ({ ...w, current: i === 2 }));
+  assert.deepEqual(lib.pinnedFirst(withCurrent, new Set([numbered[1].path])).map((w) => w.title), ["Night 10", "Night 2", "Night 1"]);
+  assert.deepEqual(lib.pinnedFirst(withCurrent, new Set()).map((w) => w.title), ["Night 10", "Night 1", "Night 2"]);
   globalThis.vicinae.preferences = { includeCurrent: false, scanDepth: "1" };
   assert.equal(lib.commandOptions().scan.includeCurrent, false);
   assert.equal(lib.commandOptions().scan.depth, "1");

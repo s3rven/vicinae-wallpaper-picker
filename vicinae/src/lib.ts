@@ -184,9 +184,13 @@ export function compareWallpaperNames(a: Wallpaper, b: Wallpaper): number {
   return nameCollator.compare(a.title || a.name, b.title || b.name);
 }
 
-export function pinFavourites(items: Wallpaper[], favourites: Set<string>): Wallpaper[] {
-  if (!favourites.size) return items;
-  return [...items.filter((w) => favourites.has(w.path)), ...items.filter((w) => !favourites.has(w.path))];
+// The unfiltered grid leads with the wallpaper on the desktop now, then the
+// favourites. Vicinae always opens a grid on its first tile (a Grid ignores
+// selectedItemId), so this is what makes the picker open on the current
+// wallpaper: Enter goes straight to its colours, and arrows start from it.
+export function pinnedFirst(items: Wallpaper[], favourites: Set<string>): Wallpaper[] {
+  const rank = (w: Wallpaper) => (w.current ? 0 : favourites.has(w.path) ? 1 : 2);
+  return items.some((w) => rank(w) < 2) ? [...items].sort((a, b) => rank(a) - rank(b)) : items;
 }
 
 // scan-wallpapers.sh emits one tab-separated record per wallpaper:

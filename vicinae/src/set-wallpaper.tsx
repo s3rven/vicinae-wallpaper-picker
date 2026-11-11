@@ -39,7 +39,7 @@ import {
   missingTools,
   nameOf,
   prettyName,
-  pinFavourites,
+  pinnedFirst,
   previewWorkPending,
   readableName,
   readCachedLibrary,
@@ -487,23 +487,23 @@ export default function SetWallpaper({ fallbackText = "" }: Partial<LaunchProps>
 
   const randomCandidates = useMemo(() => shown.filter((w) => !w.current && !isLive(w.path)), [shown]);
 
-  // Favourites ride at the top of the unfiltered library and are taken out of
-  // the sections below it, so the star is worth pressing without any tile ever
-  // appearing twice. Under a filter the pinned row is dropped: the dropdown has
-  // already answered "which subset", and re-splitting that subset by a second
-  // rule would be two questions in one list.
+  // The current wallpaper and the favourites ride at the top of the unfiltered
+  // library and are taken out of the sections below it, so the picker opens on
+  // what is on the desktop and no tile ever appears twice. Under a filter the
+  // pinned row is dropped: the dropdown has already answered "which subset",
+  // and re-splitting that subset by a second rule would be two questions in one list.
+  const isPinned = useCallback((w: Wallpaper) => w.current || favourites.has(w.path), [favourites]);
   const groups = useMemo(() => {
     if (searching) return [{ key: "results", title: "Search Results", items: shown }];
     const now = Date.now();
-    const pinned = filter === "" ? shown.filter((w) => favourites.has(w.path)) : [];
-    const rest = pinned.length > 0 ? shown.filter((w) => !favourites.has(w.path)) : shown;
+    const pinned = filter === "" ? pinnedFirst(shown.filter(isPinned), favourites) : [];
+    const rest = pinned.length > 0 ? shown.filter((w) => !isPinned(w)) : shown;
     const sections = groupWallpapers(rest, mode.group, now, columns);
-    return pinned.length > 0
-      ? [{ key: "favourites", title: "Favourites", items: pinned }, ...sections]
-      : sections;
-  }, [shown, mode.group, favourites, filter, columns, searching]);
+    const title = pinned.some((w) => favourites.has(w.path)) ? (pinned.some((w) => w.current) ? "Current and Favourites" : "Favourites") : "Current";
+    return pinned.length > 0 ? [{ key: "pinned", title, items: pinned }, ...sections] : sections;
+  }, [shown, mode.group, favourites, filter, columns, searching, isPinned]);
 
-  const flatItems = useMemo(() => filter === "" && !searching ? pinFavourites(shown, favourites) : shown, [shown, favourites, filter, searching]);
+  const flatItems = useMemo(() => filter === "" && !searching ? pinnedFirst(shown, favourites) : shown, [shown, favourites, filter, searching]);
   const selected = useMemo(() => shown.find((w) => w.path === selectedPath) ??
     (layoutMode === "flat" ? flatItems[0] : groups[0]?.items[0]), [shown, selectedPath, flatItems, groups, layoutMode]);
 
@@ -716,17 +716,15 @@ export default function SetWallpaper({ fallbackText = "" }: Partial<LaunchProps>
     // tile gives the whole row back to the image: nearly a full extra row of
     // previews fits in the launcher.
     //
-    // What still earns a line is state you cannot see in the picture: the
-    // wallpaper on the desktop now, and the starred ones. Favourites lead the
-    // flat grid, so their labels sit together in the top rows instead of
-    // scattering uneven row heights through the library. Under the favourites
-    // filter every tile is one, so the star would say nothing there.
-    //
-    // Text only, no accessory icon. Once the server drew accessories (0.29) the
-    // tile carried the same fact twice, as a badge and as its label. Names stay
-    // searchable through the keywords and readable in the tooltip and hint.
+    // State you cannot see in the picture - the wallpaper on the desktop now,
+    // the starred ones - no longer costs a label either. A label row made its
+    // row taller than the rest and cut the last visible row in half, and
+    // Vicinae draws a grid accessory in that same text row, so a badge is no
+    // cheaper. Instead the current wallpaper and the favourites lead the
+    // unfiltered grid, the footer names the selected tile with its state, and
+    // the tooltip carries it too. Under the favourites filter every tile is
+    // one, so the star would say nothing there.
     const starred = favourites.has(w.path) && filter !== "fav";
-    const subtitle = w.current ? (starred ? "★ Current" : "Current") : starred ? "★ Favourite" : undefined;
     const name = w.title || readableName(w.name);
     const preview = wallpaperPreview(w, canCreatePreviews);
 
@@ -734,9 +732,7 @@ export default function SetWallpaper({ fallbackText = "" }: Partial<LaunchProps>
       <Grid.Item
         key={w.path}
         id={w.path}
-        content={{ value: preview ?? (isLive(w.path) ? Icon.Video : Icon.Image), tooltip: [name || prettyName(w.name), isLive(w.path) ? "Live" : "", w.folder !== "Root" ? folderLabel(w.folder) : "", w.resolution, !preview ? "Preview pending · Ctrl+R to retry" : ""].filter(Boolean).join(" · ") }}
-        title={subtitle ? "" : undefined}
-        subtitle={subtitle}
+        content={{ value: preview ?? (isLive(w.path) ? Icon.Video : Icon.Image), tooltip: [name || prettyName(w.name), w.current ? "Current" : "", starred ? "Favourite" : "", isLive(w.path) ? "Live" : "", w.folder !== "Root" ? folderLabel(w.folder) : "", w.resolution, !preview ? "Preview pending · Ctrl+R to retry" : ""].filter(Boolean).join(" · ") }}
       />
     );
   }
@@ -750,6 +746,13 @@ export default function SetWallpaper({ fallbackText = "" }: Partial<LaunchProps>
     const colour = w.color ? nameOf(w.color).toLowerCase() : "";
     return `this ${colour ? `${colour} ` : ""}wallpaper`;
   }
+
+  // Tiles carry no names, so the footer names the selected one; the catalogue
+  // gives most files a real title.
+  const caption = selected
+    ? [selected.title || readableName(selected.name) || prettyName(selected.name),
+      selected.current ? "Current" : "", favourites.has(selected.path) ? "Favourite" : ""].filter(Boolean).join(" · ")
+    : `Wallpapers${colour ? ` · ${capitalise(colour)}` : ""} · ${shown.length}`;
 
   const filterLabel =
     filter === ""
@@ -801,7 +804,7 @@ export default function SetWallpaper({ fallbackText = "" }: Partial<LaunchProps>
       filtering={false}
       searchText={browseMode ? "" : query}
       onSearchTextChange={browseMode ? () => undefined : setQuery}
-      navigationTitle={`Wallpapers${colour ? ` · ${capitalise(colour)}` : ""} · ${shown.length}`}
+      navigationTitle={caption}
       onSelectionChange={(id) => { reported.current = id || ""; setSelectedPath(id || ""); }}
       searchBarPlaceholder={
         browseMode
