@@ -743,7 +743,7 @@ export default function SetWallpaper({ fallbackText = "" }: Partial<LaunchProps>
   // gives most files a real title.
   const caption = selected
     ? [selected.title || readableName(selected.name) || prettyName(selected.name),
-      selected.current ? "Current" : "", favourites.has(selected.path) ? "Favourite" : ""].filter(Boolean).join(" · ")
+      isLive(selected.path) ? "Live" : "", selected.current ? "Current" : "", favourites.has(selected.path) ? "Favourite" : ""].filter(Boolean).join(" · ")
     : `Wallpapers${colour ? ` · ${capitalise(colour)}` : ""} · ${shown.length}`;
 
   const filterLabel =
