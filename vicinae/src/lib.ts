@@ -448,7 +448,7 @@ export const ACCENTS: { name: string; hex: string; keywords: string[] }[] = [
 // "Deep Blue" / "Light Blue" when one image yields two blues.
 export function namePalettes(hexes: string[]): string[] {
   const words: Record<number, string[]> = { 2: ["Deep", "Light"], 3: ["Deep", "Mid", "Light"], 4: ["Deepest", "Deep", "Light", "Lightest"] };
-  const names = hexes.map(nameOf);
+  const names = hexes.map((hex) => capitalise(accentFamilyOf(hex)) || "Colour");
   const out = [...names];
   for (const name of new Set(names)) {
     const same = names.flatMap((n, i) => (n === name ? [i] : []));
@@ -496,9 +496,9 @@ export function capitalise(word: string): string {
   return word ? word[0].toUpperCase() + word.slice(1) : word;
 }
 
-// "Blue", "Teal", "Neutral". groupOf already buckets a colour for the library
-// rail; the palette cells want the same answer with a capital letter, so the
-// two lists name a colour identically.
+// "Blue", "Teal", "Neutral": a wallpaper's library family, capitalised, so the
+// search hint names a picture the way the colour filter does. Palette accents
+// are named by accentFamilyOf instead.
 export function nameOf(hex: string): string {
   const g = groupOf(hex);
   return g ? capitalise(g) : "Colour";
@@ -668,10 +668,26 @@ const BANDS: [string, number, number][] = [
 export function groupOf(hex: string): string {
   const rgb = rgbOf(hex);
   if (!rgb) return "";
-  const [r, g, b] = rgb;
-  const max = Math.max(r, g, b);
-  const chroma = max - Math.min(r, g, b);
+  const max = Math.max(...rgb);
+  const chroma = max - Math.min(...rgb);
   if (chroma < 0.05 || max === 0 || chroma / max < 0.25) return "neutral";
+  return hueBandOf(rgb, max, chroma);
+}
+
+// The family of a theme accent rather than of a photo. Matugen's dark-scheme
+// accents are light tones, and a clear lavender like #c1c1ff has a saturation
+// ratio of only 0.24, so groupOf's photo rule calls it grey: 25 of the 38
+// "Neutral" palettes in a 169-image library were lavenders and orchids. Its
+// true greys stay under 0.02 of chroma and its coloured accents above 0.2.
+export function accentFamilyOf(hex: string): string {
+  const rgb = rgbOf(hex);
+  if (!rgb) return "";
+  const max = Math.max(...rgb);
+  const chroma = max - Math.min(...rgb);
+  return chroma < 0.06 ? "neutral" : hueBandOf(rgb, max, chroma);
+}
+
+function hueBandOf([r, g, b]: [number, number, number], max: number, chroma: number): string {
   let h = max === r ? ((g - b) / chroma) % 6 : max === g ? (b - r) / chroma + 2 : (r - g) / chroma + 4;
   h *= 60;
   if (h < 0) h += 360;

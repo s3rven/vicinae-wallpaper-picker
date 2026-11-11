@@ -42,6 +42,9 @@ try {
     { index: 2, primary: "#ddeeff", tertiary: "#445566", surface: "#000000" },
   ]);
   assert.deepEqual(lib.namePalettes(["#2255aa", "#ee3333", "#99bbff"]), ["Deep Blue", "Red", "Light Blue"]);
+  // Matugen's light accents: a lavender and an orchid are colours, its greys are not.
+  assert.deepEqual(lib.namePalettes(["#c1c1ff", "#eab5ee", "#e3b7f3", "#c7c6c6"]), ["Blue", "Pink", "Purple", "Neutral"]);
+  assert.equal(lib.groupOf("#c1c1ff"), "neutral");
   assert.ok(lib.ACCENTS.every((a) => lib.normaliseHex(a.hex) === a.hex));
   assert.equal(lib.readPaletteIndex(), 0);
   assert.equal(lib.readAccent(), null);
