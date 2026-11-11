@@ -127,7 +127,7 @@ const EARLIER = "Earlier";
 
 // The library's crop, as the grid can express it.
 //
-// thumb-lib.sh renders every thumbnail to 800x500 (16:10, a common laptop
+// image-lib.sh renders every thumbnail to 800x500 (16:10, a common laptop
 // aspect). Grid.AspectRatio has no 16/10, and of what it does offer
 // ("1", "3/2", "4/3", "16/9", ...) 3/2 is the nearest: 1.5 against 1.6, where
 // 16/9 would be 1.78 and visibly wrong. Paired with Fill, the cell crops the

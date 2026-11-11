@@ -60,16 +60,10 @@ try {
   assert.equal(lib.readRememberedPalette("/w/b.png"), null);
   assert.equal(lib.readRememberedPalette("/w/a"), null);
 
-  assert.equal(lib.rgbString("#4488ff"), "68, 136, 255");
-  assert.equal(lib.rgbString("not-a-colour"), "");
 
   assert.equal(lib.groupOf("#3670D1"), "blue");
   assert.equal(lib.groupOf("#181824"), "neutral");
   assert.equal(lib.groupOf("#ff0000junk"), "");
-  assert.equal(lib.hueOf("#181824"), 1e6);
-  assert.equal(lib.hueOf("#not-a-hex"), 1e6);
-  assert.equal(lib.displayName("wallpaper.PNG", false), "wallpaper");
-  assert.equal(lib.displayName("wallpaper.PNG", true), "wallpaper.PNG");
 
 
 

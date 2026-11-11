@@ -249,23 +249,6 @@ export async function scanWallpapers(options: ScanOptions = {}): Promise<Wallpap
   return out;
 }
 
-export function hueOf(hex: string): number {
-  // 1e6 rather than -1 for the unparseable case: the sort uses this directly, and
-  // uncoloured wallpapers should sink to the end rather than clump at red.
-  const rgb = rgbOf(hex);
-  if (!rgb) return 1e6;
-  const [r, g, b] = rgb;
-  const max = Math.max(r, g, b);
-  const d = max - Math.min(r, g, b);
-  // Keep the sort in step with groupOf: low-chroma charcoal should land in the
-  // final Neutral section instead of borrowing a random hue from tiny channel
-  // noise (for example #181824 otherwise sorts as blue).
-  if (d < 0.05 || max === 0 || d / max < 0.25) return 1e6;
-  let h = max === r ? ((g - b) / d) % 6 : max === g ? (b - r) / d + 2 : (r - g) / d + 4;
-  h *= 60;
-  return h < 0 ? h + 360 : h;
-}
-
 export type ApplyOptions = {
   // Undefined keeps the current accent; an empty string restores automatic image colours.
   accent?: string;
@@ -495,16 +478,6 @@ function rgbOf(hex: string): [number, number, number] | null {
   ];
 }
 
-// Hex is what the swatch is stored and matched as, but it is not what every
-// workflow wants pasted elsewhere - a config file or a design tool more often
-// takes decimal channels. "" rather than throwing: this sits next to a
-// clipboard action, where a bad hex should copy nothing rather than crash it.
-export function rgbString(hex: string): string {
-  const rgb = rgbOf(hex);
-  if (!rgb) return "";
-  return rgb.map((c) => Math.round(c * 255)).join(", ");
-}
-
 export function capitalise(word: string): string {
   return word ? word[0].toUpperCase() + word.slice(1) : word;
 }
@@ -532,10 +505,6 @@ export function lightnessOf(hex: string): number {
 // tooltip and in its search keywords, so nothing becomes unfindable.
 export function prettyName(name: string): string {
   return name.replace(/\.(jpe?g|png|webp|mp4|webm|mkv)$/i, "");
-}
-
-export function displayName(name: string, showExtensions: boolean): string {
-  return showExtensions ? name : prettyName(name);
 }
 
 // Most wallpaper collections are named by where a file came from, not by what
