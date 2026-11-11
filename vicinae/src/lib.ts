@@ -740,10 +740,12 @@ export function writeView(view: View): void {
 // ---- library cache ---------------------------------------------------------
 
 
-// Short TTL on purpose. This exists to skip the ~110ms of empty grid on open,
-// not to avoid scanning: the real scan always runs and always wins, so the only
-// thing the TTL bounds is how stale the *first paint* can be.
-const cache = new Cache({ namespace: "library", ttl: 5 * 60 * 1000 });
+// No expiry. This exists to skip the empty grid on open, not to avoid scanning:
+// the real scan always runs and replaces the first paint about 0.1 s later. The
+// five-minute TTL this had only bounded that tenth of a second of staleness, and
+// most opens come further apart, so they still opened empty: 164 ms to the grid
+// against 84 ms from the cache (2026-11-10, 178 wallpapers).
+const cache = new Cache({ namespace: "library" });
 
 // The version is in the key because the read below promises that a
 // version-skewed entry is a cache miss, and the shape check alone cannot
