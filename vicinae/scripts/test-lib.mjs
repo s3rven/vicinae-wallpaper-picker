@@ -53,6 +53,12 @@ try {
   assert.equal(lib.readAccent(), "#aabbcc");
   writeFileSync(join(tempDir, "wallpaper-picker", "source-index"), "2\n");
   assert.equal(lib.readPaletteIndex(), 2);
+  assert.equal(lib.readRememberedPalette("/w/a.png"), null);
+  writeFileSync(join(tempDir, "wallpaper-picker", "palettes"), "3\t/w/a b\\c.png\n9\t/w/b.png\n1\t/w/a.png\n");
+  assert.equal(lib.readRememberedPalette("/w/a b\\c.png"), 3);
+  assert.equal(lib.readRememberedPalette("/w/a.png"), 1);
+  assert.equal(lib.readRememberedPalette("/w/b.png"), null);
+  assert.equal(lib.readRememberedPalette("/w/a"), null);
 
   assert.equal(lib.rgbString("#4488ff"), "68, 136, 255");
   assert.equal(lib.rgbString("not-a-colour"), "");

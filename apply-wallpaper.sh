@@ -42,6 +42,8 @@ fit_state=${WALLPAPER_PICKER_FIT_STATE:-"$state_dir/fit"}
 previous_state=${WALLPAPER_PICKER_PREVIOUS:-"$state_dir/previous"}
 custom_accent_state=${WALLPAPER_PICKER_CUSTOM_ACCENT:-"$state_dir/custom-accent"}
 source_index_state=${WALLPAPER_PICKER_SOURCE_INDEX:-"$state_dir/source-index"}
+# "INDEX<TAB>PATH" per wallpaper whose chosen palette is not the first one, newest first.
+palettes_state=${WALLPAPER_PICKER_PALETTES:-"$state_dir/palettes"}
 accent_changed=0
 if [ "${WALLPAPER_PICKER_ACCENT+x}" = x ]; then
     accent_changed=1
@@ -68,6 +70,33 @@ atomic_write() {
     mkdir -p -- "$(dirname -- "$target")" || return 1
     tmp=$(mktemp "${target}.XXXXXX") || return 1
     if printf '%s\n' "$value" >"$tmp" && mv -fT -- "$tmp" "$target"; then return 0; fi
+    rm -f -- "$tmp"
+    return 1
+}
+
+# A palette belongs to its image, so it comes back with it: Previous, Random
+# and a direct apply reuse the one last chosen for that wallpaper.
+remembered_palette() {
+    local index path
+    [ -r "$palettes_state" ] || return 0
+    while IFS=$'\t' read -r index path; do
+        if [ "$path" = "$1" ] && [[ "$index" =~ ^[0-3]$ ]]; then
+            printf '%s\n' "$index"
+            return 0
+        fi
+    done <"$palettes_state"
+}
+
+remember_palette() {
+    local index=$1 path=$2 tmp
+    [ "$index" != 0 ] || [ -s "$palettes_state" ] || return 0
+    tmp=$(mktemp "${palettes_state}.XXXXXX") || return 1
+    {
+        [ "$index" = 0 ] || printf '%s\t%s\n' "$index" "$path"
+        # ENVIRON, not -v: awk would expand backslashes in the path. awk caps
+        # the list itself; `head` would break the pipe under pipefail.
+        [ ! -r "$palettes_state" ] || P=$path awk -F'\t' '$2 != ENVIRON["P"] && kept++ < 499' "$palettes_state"
+    } >"$tmp" && mv -fT -- "$tmp" "$palettes_state" && return 0
     rm -f -- "$tmp"
     return 1
 }
@@ -166,11 +195,16 @@ if [ "$accent_changed" = 1 ]; then
     fi
 elif [ "$old_wallpaper" != "$wallpaper" ] && [ -f "$source_index_state" ]; then
     # Index 3 of the last image is an arbitrary colour of this one, or out of range.
-    atomic_write "$source_index_state" 0
+    remembered=$(remembered_palette "$wallpaper")
+    atomic_write "$source_index_state" "${remembered:-0}"
 fi
 atomic_write "$wallpaper_state" "$wallpaper"
 committing=false
 attempted=false
+# Only a memory for later applies: losing it must not fail this one.
+if [ "$accent_changed" = 1 ] && [ -z "$WALLPAPER_PICKER_ACCENT" ]; then
+    remember_palette "${palette:-0}" "$wallpaper" || true
+fi
 
 # A hook is opt-in. Its failure cannot undo a successfully applied wallpaper.
 if [ -n "${WALLPAPER_PICKER_POST_APPLY:-}" ] \

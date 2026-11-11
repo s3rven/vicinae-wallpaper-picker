@@ -280,6 +280,46 @@ if sys.argv[1:2] == ['img']:
         self.assertEqual(self.apply().returncode, 0)
         self.assertEqual(source.read_text(), "0\n")
 
+    def test_returning_to_an_image_restores_its_chosen_palette(self):
+        source = self.state / "source-index"
+        palettes = self.state / "palettes"
+        self.env["WALLPAPER_PICKER_PALETTE"] = "2"
+        self.assertEqual(self.apply().returncode, 0)
+        self.assertEqual(palettes.read_text(), f"2\t{self.new}\n")
+        del self.env["WALLPAPER_PICKER_PALETTE"]
+        self.assertEqual(self.run_script("apply-wallpaper.sh", self.old, "none").returncode, 0)
+        self.assertEqual(source.read_text(), "0\n")
+        # Previous, Random and a direct apply all come back the way it was chosen.
+        self.assertEqual(self.apply().returncode, 0)
+        self.assertEqual(source.read_text(), "2\n")
+        # Choosing the first palette again forgets the exception.
+        self.env["WALLPAPER_PICKER_PALETTE"] = "0"
+        self.assertEqual(self.apply().returncode, 0)
+        self.assertEqual(palettes.read_text(), "")
+
+    def test_a_pinned_accent_outranks_a_remembered_palette(self):
+        (self.state / "palettes").write_text(f"3\t{self.new}\n")
+        (self.state / "custom-accent").write_text("#4488ff\n")
+        self.assertEqual(self.apply().returncode, 0)
+        self.assertEqual((self.state / "custom-accent").read_text(), "#4488ff\n")
+        self.assertFalse((self.state / "source-index").exists())
+        self.assertEqual((self.state / "palettes").read_text(), f"3\t{self.new}\n")
+
+    def test_remembered_palettes_are_bounded_and_unharmed_by_odd_paths(self):
+        palettes = self.state / "palettes"
+        palettes.write_text("".join(f"1\t/library/{n}.png\n" for n in range(600)) + "9\tjunk\n")
+        odd = self.home / "back\\slash.png"
+        odd.touch()
+        self.env["WALLPAPER_PICKER_PALETTE"] = "3"
+        self.assertEqual(self.run_script("apply-wallpaper.sh", odd, "none").returncode, 0)
+        lines = palettes.read_text().splitlines()
+        self.assertEqual(len(lines), 500)
+        self.assertEqual(lines[0], f"3\t{odd}")
+        del self.env["WALLPAPER_PICKER_PALETTE"]
+        self.assertEqual(self.apply().returncode, 0)
+        self.assertEqual(self.run_script("apply-wallpaper.sh", odd, "none").returncode, 0)
+        self.assertEqual((self.state / "source-index").read_text(), "3\n")
+
     def test_invalid_palette_is_rejected_before_changing_wallpaper(self):
         for env in ({"WALLPAPER_PICKER_PALETTE": "4"},
                     {"WALLPAPER_PICKER_PALETTE": "1", "WALLPAPER_PICKER_ACCENT": "#4488ff"}):

@@ -466,6 +466,19 @@ export function readPaletteIndex(): number {
   } catch { return 0; }
 }
 
+// The palette last chosen for this wallpaper, which apply-wallpaper.sh restores
+// whenever it comes back; null when that is simply the first one.
+export function readRememberedPalette(path: string): number | null {
+  try {
+    const file = process.env.WALLPAPER_PICKER_PALETTES || join(STATE_DIR, "wallpaper-picker", "palettes");
+    for (const line of readFileSync(file, "utf8").split("\n")) {
+      const tab = line.indexOf("\t");
+      if (tab > 0 && line.slice(tab + 1) === path && /^[0-3]$/.test(line.slice(0, tab))) return Number(line.slice(0, tab));
+    }
+  } catch { /* nothing remembered yet */ }
+  return null;
+}
+
 export function readAccent(): string | null {
   try {
     return normaliseHex(readFileSync(process.env.WALLPAPER_PICKER_CUSTOM_ACCENT || join(STATE_DIR, "wallpaper-picker", "custom-accent"), "utf8"));

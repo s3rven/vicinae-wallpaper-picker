@@ -1,11 +1,11 @@
 import { Action, ActionPanel, Icon, List } from "@vicinae/api";
 import { pathToFileURL } from "node:url";
 import { useEffect, useState } from "react";
-import { ACCENTS, namePalettes, normaliseHex, prettyName, readAccent, readPaletteIndex, wallpaperPalettes, wallpaperPreview, type Palette, type Wallpaper } from "./lib";
+import { ACCENTS, namePalettes, normaliseHex, prettyName, readAccent, readPaletteIndex, readRememberedPalette, wallpaperPalettes, wallpaperPreview, type Palette, type Wallpaper } from "./lib";
 
 export type ColourChoice = { accent: string } | { palette: number };
 type Props = { wallpaper: Wallpaper; onApply: (choice: ColourChoice) => Promise<void> };
-type Row = { id: string; title: string; colour?: string; choice: ColourChoice; palette?: Palette; current: boolean; keywords: string[]; note?: string };
+type Row = { id: string; title: string; colour?: string; choice: ColourChoice; palette?: Palette; current: boolean; lastUsed?: boolean; keywords: string[]; note?: string };
 
 export default function WallpaperColours({ wallpaper, onApply }: Props) {
   const [palettes, setPalettes] = useState<Palette[]>([]);
@@ -15,6 +15,8 @@ export default function WallpaperColours({ wallpaper, onApply }: Props) {
   const [query, setQuery] = useState("");
   const [pin] = useState(readAccent);
   const [index] = useState(readPaletteIndex);
+  // Another wallpaper's own last choice leads its list, so Enter, Enter brings back the same look.
+  const [remembered] = useState(() => wallpaper.current ? null : readRememberedPalette(wallpaper.path));
 
   useEffect(() => {
     let active = true;
@@ -31,8 +33,9 @@ export default function WallpaperColours({ wallpaper, onApply }: Props) {
   const names = namePalettes(palettes.map((p) => p.primary));
   const paletteRows: Row[] = palettes.map((p, i) => ({
     id: `palette:${p.index}`, title: names[i], colour: p.primary, choice: { palette: p.index }, palette: p,
-    current: wallpaper.current && !pin && p.index === index, keywords: [p.primary, "wallpaper", "palette"],
-  })).sort((a, b) => Number(b.current) - Number(a.current));
+    current: wallpaper.current && !pin && p.index === index, lastUsed: p.index === remembered,
+    keywords: [p.primary, "wallpaper", "palette"],
+  })).sort((a, b) => Number(b.current || b.lastUsed) - Number(a.current || a.lastUsed));
   // Without matugen there is nothing to preview, but automatic colours still clear a pin.
   if (!loading && paletteRows.length === 0) {
     paletteRows.push({ id: "palette:0", title: "Automatic", colour: wallpaper.color || undefined, choice: { palette: 0 },
@@ -61,7 +64,7 @@ export default function WallpaperColours({ wallpaper, onApply }: Props) {
   const item = (row: Row) => (
     <List.Item key={row.id} id={row.id} title={row.title}
       icon={row.colour ? { source: Icon.CircleFilled, tintColor: row.colour } : Icon.Image}
-      accessories={row.current ? [{ text: "Current" }] : undefined}
+      accessories={row.current ? [{ text: "Current" }] : row.lastUsed ? [{ text: "Last Used" }] : undefined}
       detail={<List.Item.Detail markdown={markdown} metadata={
         <List.Item.Detail.Metadata>
           {row.colour && <List.Item.Detail.Metadata.Label title="Accent" text={row.colour.toUpperCase()} icon={{ source: Icon.CircleFilled, tintColor: row.colour }} />}

@@ -146,8 +146,9 @@ It starts awww-daemon when needed. Restoring does not run post-apply hooks.
 **Enter** on a wallpaper opens its colours, with the wallpaper beside the list.
 
 - **From This Wallpaper:** up to four matugen palettes of the image. Each shows
-  the accent, complement and surface your theme will get. A palette applies to
-  this wallpaper only.
+  the accent, complement and surface your theme will get. A palette belongs to
+  its wallpaper: Previous, Random and a direct apply bring that wallpaper back
+  with the palette you last chose for it, listed first as **Last Used**.
 - **Accents:** twelve muted presets. An accent stays pinned for later wallpapers
   until you choose a palette again.
 - **Custom:** type a `#RGB` or `#RRGGBB` hex in the search bar.
@@ -200,7 +201,7 @@ A hook receives:
 | `$1` | The original wallpaper path. |
 | `WALLPAPER_PICKER_CURRENT_IMAGE` | A still image: the wallpaper itself, or a video's first frame. |
 | `WALLPAPER_PICKER_THUMBNAIL` | The cached thumbnail the colour previews were made from, when one exists. Theme from it so the result matches the preview. |
-| `WALLPAPER_PICKER_PALETTE_INDEX` | The chosen palette, as matugen's `--source-color-index` (0-3). |
+| `WALLPAPER_PICKER_PALETTE_INDEX` | The chosen palette, or the one last chosen for this wallpaper, as matugen's `--source-color-index` (0-3). |
 | `WALLPAPER_PICKER_ACCENT` | The pinned `#RRGGBB` accent, or empty when a palette is used. |
 | `WALLPAPER_PICKER_ACCENT_CHANGED` | `1` after an explicit colour choice; `0` for immediate, random and previous applies, which keep the saved choice. |
 
