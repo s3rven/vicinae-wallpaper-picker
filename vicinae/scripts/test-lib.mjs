@@ -53,6 +53,9 @@ try {
   assert.equal(lib.readAccent(), "#aabbcc");
   writeFileSync(join(tempDir, "wallpaper-picker", "source-index"), "2\n");
   assert.equal(lib.readPaletteIndex(), 2);
+  assert.equal(lib.readLiveStatus(), null);
+  lib.rememberLiveStatus({ running: true, paused: false, policy: "covered" });
+  assert.deepEqual(lib.readLiveStatus(), { running: true, paused: false, policy: "covered" });
   assert.equal(lib.readRememberedPalette("/w/a.png"), null);
   writeFileSync(join(tempDir, "wallpaper-picker", "palettes"), "3\t/w/a b\\c.png\n9\t/w/b.png\n1\t/w/a.png\n");
   assert.equal(lib.readRememberedPalette("/w/a b\\c.png"), 3);

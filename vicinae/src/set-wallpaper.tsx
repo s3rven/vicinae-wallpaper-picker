@@ -43,6 +43,8 @@ import {
   previewWorkPending,
   readableName,
   readCachedLibrary,
+  readLiveStatus,
+  rememberLiveStatus,
   readFavourites,
   readView,
   scanWallpapers,
@@ -274,19 +276,7 @@ type Prefs = {
 };
 
 export default function SetWallpaper({ fallbackText = "" }: Partial<LaunchProps> = {}) {
-  const [wallpapers, setWallpapers] = useState<Wallpaper[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [query, setQuery] = useState(fallbackText);
-  // One dropdown, four rails. "" is everything, "fav" the starred set,
-  // "live"/"stills"/"archive" by kind, "c:<name>" a colour family and "f:<name>" a
-  // literal folder — prefixes keep a folder called "fav" or "blue" unambiguous.
-  // Both the filter and the sort start where the last session left them.
-  const [remembered] = useState(readView);
-  const [filter, setFilter] = useState(remembered.filter ?? "");
-  const [colour, setColour] = useState(remembered.colour ?? "");
   const prefs = getPreferenceValues<Prefs>();
-  const initialSort: Sort =
-    prefs.defaultSort === "name" || prefs.defaultSort === "recent" ? prefs.defaultSort : "hue";
   const wallpaperDirectory =
     typeof prefs.wallpaperDirectory === "string" && prefs.wallpaperDirectory.trim().length > 0
       ? prefs.wallpaperDirectory.trim()
@@ -297,6 +287,24 @@ export default function SetWallpaper({ fallbackText = "" }: Partial<LaunchProps>
     () => ({ directory: wallpaperDirectory, depth: scanDepth, includeCurrent }),
     [wallpaperDirectory, scanDepth, includeCurrent],
   );
+  // The cached library goes into the very first render. Read in an effect, it
+  // cost an empty first commit and a second full one, and Vicinae drew nothing
+  // until both had arrived: the window grew as an empty card (filmed 2026-11-11).
+  const [wallpapers, setWallpapers] = useState<Wallpaper[]>(() => readCachedLibrary(scanOptions) ?? []);
+  const [loading, setLoading] = useState(() => wallpapers.length === 0);
+  // What the grid shows now, so an identical scan result can skip the re-render.
+  const library = useRef(wallpapers);
+  library.current = wallpapers;
+  const [query, setQuery] = useState(fallbackText);
+  // One dropdown, four rails. "" is everything, "fav" the starred set,
+  // "live"/"stills"/"archive" by kind, "c:<name>" a colour family and "f:<name>" a
+  // literal folder — prefixes keep a folder called "fav" or "blue" unambiguous.
+  // Both the filter and the sort start where the last session left them.
+  const [remembered] = useState(readView);
+  const [filter, setFilter] = useState(remembered.filter ?? "");
+  const [colour, setColour] = useState(remembered.colour ?? "");
+  const initialSort: Sort =
+    prefs.defaultSort === "name" || prefs.defaultSort === "recent" ? prefs.defaultSort : "hue";
   const [transitionOverride, setTransitionOverride] = useState<Transition | undefined>(remembered.transition);
   const [durationOverride, setDurationOverride] = useState<TransitionDuration | undefined>(() => remembered.duration ? preferenceValue(remembered.duration, DURATION_VALUES, "auto") : undefined);
   const transition = transitionOf(transitionOverride ?? prefs.transition);
@@ -320,7 +328,7 @@ export default function SetWallpaper({ fallbackText = "" }: Partial<LaunchProps>
   );
   useEffect(() => writeView({ filter, sort, colour, transition: transitionOverride, duration: durationOverride }), [filter, sort, colour, transitionOverride, durationOverride]);
   const [favourites, setFavourites] = useState<Set<string>>(() => readFavourites());
-  const [live, setLive] = useState<LiveStatus | null>(null);
+  const [live, setLive] = useState<LiveStatus | null>(readLiveStatus);
   const [selectedPath, setSelectedPath] = useState("");
   // The panel below is rebuilt only after Vicinae receives the next render (throttled
   // to ~16 ms), so Enter right after an arrow key runs the previous tile's panel.
@@ -390,10 +398,14 @@ export default function SetWallpaper({ fallbackText = "" }: Partial<LaunchProps>
       .then((list) => {
         if (!alive.current || request !== scanRequest.current) return;
         setScanError("");
-        setWallpapers(list);
-        // Only a removed folder expires. An empty favourite/live/current filter remains selected.
+        // Usually the scan finds what the cache already painted; sending the
+        // same grid again would only make Vicinae rebuild it mid-open.
+        if (JSON.stringify(list) !== JSON.stringify(library.current)) {
+          setWallpapers(list);
+          writeCachedLibrary(list, scanOptions);
+        }
+        // Only a removed folder expires. An empty favourite/live filter remains selected.
         setFilter((current) => current.startsWith("f:") && !list.some((w) => w.folder === current.slice(2)) ? "" : current);
-        writeCachedLibrary(list, scanOptions);
         pollCache(list, request);
         if (announce) {
           void showToast({ style: Toast.Style.Success, title: `Rescanned ${list.length} wallpapers` }).catch(() => undefined);
@@ -428,14 +440,7 @@ export default function SetWallpaper({ fallbackText = "" }: Partial<LaunchProps>
     }
   }, []);
 
-  useEffect(() => {
-    const cached = readCachedLibrary(scanOptions);
-    if (cached) {
-      setWallpapers(cached);
-      setLoading(false);
-    }
-    refresh();
-  }, [refresh]);
+  useEffect(() => refresh(), [refresh]);
 
   const sorted = useMemo(() => {
     const src = [...wallpapers];
@@ -521,8 +526,13 @@ export default function SetWallpaper({ fallbackText = "" }: Partial<LaunchProps>
 
   // Asked once on open: the player only changes when this picker or a keybind
   // changes it, and both refresh the state they set.
+  // Starts from the last answer, so the usual unchanged status costs no render.
   useEffect(() => {
-    void liveStatus().then((s) => alive.current && setLive(s));
+    void liveStatus().then((s) => {
+      if (!alive.current || !s) return;
+      rememberLiveStatus(s);
+      setLive((current) => JSON.stringify(current) === JSON.stringify(s) ? current : s);
+    });
   }, []);
   const hasLive = useMemo(() => wallpapers.some((w) => isLive(w.path)), [wallpapers]);
   const liveCount = useMemo(() => colourScope.filter((w) => !isArchived(w) && isLive(w.path)).length, [colourScope]);
@@ -795,7 +805,12 @@ export default function SetWallpaper({ fallbackText = "" }: Partial<LaunchProps>
       searchText={browseMode ? "" : query}
       onSearchTextChange={browseMode ? () => undefined : setQuery}
       navigationTitle={caption}
-      onSelectionChange={(id) => { reported.current = id || ""; setSelectedPath(id || ""); }}
+      onSelectionChange={(id) => {
+        reported.current = id || "";
+        // Vicinae reports the first tile on open; it is already the one shown as selected.
+        if (!selectedPath && id === selected?.path) return;
+        setSelectedPath(id || "");
+      }}
       searchBarPlaceholder={
         browseMode
           ? selected

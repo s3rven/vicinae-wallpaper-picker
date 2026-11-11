@@ -609,6 +609,18 @@ export function isLive(path: string): boolean {
 
 const runLive = (args: string[]) => run("python3", [script("live-wallpaper.py"), ...args], { maxBuffer: 64 * 1024 });
 
+const liveCache = new Cache({ namespace: "live" });
+export function readLiveStatus(): LiveStatus | null {
+  try {
+    const s = JSON.parse(liveCache.get("status") ?? "null") as Partial<LiveStatus> | null;
+    return s && typeof s.running === "boolean" && typeof s.paused === "boolean" && LIVE_POLICIES.some((p) => p.id === s.policy)
+      ? { running: s.running, paused: s.paused, policy: s.policy as LivePolicy } : null;
+  } catch { return null; }
+}
+export function rememberLiveStatus(status: LiveStatus): void {
+  try { liveCache.set("status", JSON.stringify(status)); } catch { /* only a first-paint hint */ }
+}
+
 export async function liveStatus(): Promise<LiveStatus | null> {
   try {
     return JSON.parse((await runLive(["status"])).stdout) as LiveStatus;
