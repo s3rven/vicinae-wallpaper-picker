@@ -92,7 +92,6 @@ try {
   assert.deepEqual(lib.filterLibrary(library, "", new Set()), [wallpaper]);
   assert.deepEqual(lib.filterLibrary(library, "c:blue", new Set()), [wallpaper]);
   assert.deepEqual(lib.filterLibrary(library, "archive", new Set()), [archive]);
-  assert.deepEqual(lib.filterLibrary(library, "current", new Set()), [archive]);
   assert.deepEqual(lib.filterLibrary(library, "fav", new Set([archive.path])), [archive]);
   assert.deepEqual(lib.filterLibrary([{ ...wallpaper, folder: "fav" }], "f:fav", new Set()), [{ ...wallpaper, folder: "fav" }]);
   const video = { ...wallpaper, path: "/wallpapers/clip.mp4" };

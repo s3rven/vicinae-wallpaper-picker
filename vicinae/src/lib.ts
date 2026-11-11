@@ -104,7 +104,6 @@ export function isArchived(wallpaper: Pick<Wallpaper, "folder">): boolean {
 export function filterLibrary(items: Wallpaper[], filter: string, favourites: Set<string>, colour = ""): Wallpaper[] {
   if (colour) items = items.filter((w) => w.group === colour && Boolean(w.color));
   if (filter === "fav") return items.filter((w) => favourites.has(w.path));
-  if (filter === "current") return items.filter((w) => w.current);
   if (filter === "archive") return items.filter(isArchived);
   if (filter.startsWith("f:")) return items.filter((w) => w.folder === filter.slice(2));
   const active = items.filter((w) => !isArchived(w));
@@ -530,13 +529,6 @@ export function readableName(name: string): string | null {
   return base.replace(/[-_]+/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
-export function vividnessOf(hex: string): number {
-  const rgb = rgbOf(hex);
-  if (!rgb) return -1;
-  const [r, g, b] = rgb;
-  const max = Math.max(r, g, b);
-  return (max - Math.min(r, g, b)) * max;
-}
 
 // ---- persisted state -------------------------------------------------------
 //

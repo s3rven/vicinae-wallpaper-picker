@@ -82,7 +82,7 @@ favourites and local settings are kept outside the checkout.
   names also live in tooltips and search.
 - **Collections and filters.** Subfolders become collections, and Archive/Old
   folders get their own filter. Filter by colour (**Ctrl+Shift+F**), favourites,
-  current, live or still, and combine a colour with a collection. The picker
+  live or still, and combine a colour with a collection. The picker
   remembers your filter and sort.
 - **Search** matches names, titles, tags, folders and colour names.
   Abbreviations such as `lndscp` work when nothing matches literally.

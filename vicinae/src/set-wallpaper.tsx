@@ -48,7 +48,6 @@ import {
   scanWallpapers,
   searchLibrary,
   transitionOf,
-  vividnessOf,
   wallpaperPreview,
   writeCachedLibrary,
   writeFavourites,
@@ -279,7 +278,7 @@ export default function SetWallpaper({ fallbackText = "" }: Partial<LaunchProps>
   const [loading, setLoading] = useState(true);
   const [query, setQuery] = useState(fallbackText);
   // One dropdown, four rails. "" is everything, "fav" the starred set,
-  // "current" the applied image, "c:<name>" a colour family and "f:<name>" a
+  // "live"/"stills"/"archive" by kind, "c:<name>" a colour family and "f:<name>" a
   // literal folder — prefixes keep a folder called "fav" or "blue" unambiguous.
   // Both the filter and the sort start where the last session left them.
   const [remembered] = useState(readView);
@@ -319,8 +318,7 @@ export default function SetWallpaper({ fallbackText = "" }: Partial<LaunchProps>
   const [sort, setSort] = useState<Sort>(
     () => SORTS.find((s) => s.id === remembered.sort)?.id ?? initialSort,
   );
-  // "Current" is a one-off lookup: remembered, the next open would show one tile.
-  useEffect(() => writeView({ filter: filter === "current" ? "" : filter, sort, colour, transition: transitionOverride, duration: durationOverride }), [filter, sort, colour, transitionOverride, durationOverride]);
+  useEffect(() => writeView({ filter, sort, colour, transition: transitionOverride, duration: durationOverride }), [filter, sort, colour, transitionOverride, durationOverride]);
   const [favourites, setFavourites] = useState<Set<string>>(() => readFavourites());
   const [live, setLive] = useState<LiveStatus | null>(null);
   const [selectedPath, setSelectedPath] = useState("");
@@ -454,7 +452,6 @@ export default function SetWallpaper({ fallbackText = "" }: Partial<LaunchProps>
     return [...counts.entries()].sort((a, b) => folderLabel(a[0]).localeCompare(folderLabel(b[0])));
   }, [wallpapers, colourScope]);
 
-  const currentCount = useMemo(() => colourScope.filter((w) => w.current).length, [colourScope]);
   const archiveCount = useMemo(() => colourScope.filter(isArchived).length, [colourScope]);
   const activeCount = colourScope.length - archiveCount;
   const favouriteCount = useMemo(
@@ -463,22 +460,17 @@ export default function SetWallpaper({ fallbackText = "" }: Partial<LaunchProps>
   );
 
   const baseFiltered = useMemo(() => filterLibrary(sorted, filter, favourites), [sorted, filter, favourites]);
-  // Keep every colour available while detection warms, and count within the chosen collection.
+  // Counted within the chosen collection. A family with nothing in it only
+  // leads to an empty grid, so it is listed only while colours are still being
+  // detected or while it is the chosen one. Each family keeps its own swatch:
+  // a library's most vivid "yellow" was a near-black brown, unreadable in the menu.
+  const colourDetectionPending = useMemo(() => canCreatePreviews && wallpapers.some((w) => !w.color), [wallpapers, canCreatePreviews]);
   const colours = useMemo(() => {
-    const acc = new Map<string, { count: number; swatch: string; score: number }>();
-    for (const w of baseFiltered) {
-      if (!w.group || !w.color) continue;
-      const seen = acc.get(w.group) ?? { count: 0, swatch: w.color, score: -1 };
-      seen.count += 1;
-      const score = vividnessOf(w.color);
-      if (score > seen.score) {
-        seen.score = score;
-        seen.swatch = w.color;
-      }
-      acc.set(w.group, seen);
-    }
-    return COLOR_GROUPS.map((g) => ({ name: g, ...(acc.get(g) ?? { count: 0, swatch: COLOUR_SWATCHES[g] }) }));
-  }, [baseFiltered]);
+    const counts = new Map<string, number>();
+    for (const w of baseFiltered) if (w.group && w.color) counts.set(w.group, (counts.get(w.group) ?? 0) + 1);
+    return COLOR_GROUPS.map((g) => ({ name: g, count: counts.get(g) ?? 0, swatch: COLOUR_SWATCHES[g] }))
+      .filter((c) => c.count > 0 || c.name === colour || colourDetectionPending);
+  }, [baseFiltered, colour, colourDetectionPending]);
 
   const filtered = useMemo(() => filterLibrary(sorted, filter, favourites, colour), [sorted, filter, favourites, colour]);
   const searchIndex = useMemo(() => createSearchIndex(wallpapers), [wallpapers]);
@@ -759,9 +751,7 @@ export default function SetWallpaper({ fallbackText = "" }: Partial<LaunchProps>
       ? "All"
       : filter === "fav"
         ? "Favourites"
-        : filter === "current"
-          ? "Current"
-          : filter === "archive" ? "Archive"
+        : filter === "archive" ? "Archive"
           : filter === "live" ? "Live Wallpapers"
           : filter === "stills" ? "Still Wallpapers"
           : filter.startsWith("c:")
@@ -820,7 +810,6 @@ export default function SetWallpaper({ fallbackText = "" }: Partial<LaunchProps>
             {(hasLive || filter === "live") && <Grid.Dropdown.Item title={`Live (${liveCount})`} value="live" icon={Icon.Video} />}
             <Grid.Dropdown.Item title={`Stills (${activeCount - liveCount})`} value="stills" icon={Icon.Image} />
             <Grid.Dropdown.Item title={`Favourites (${favouriteCount})`} value="fav" icon={Icon.Star} />
-            <Grid.Dropdown.Item title={`Current (${currentCount})`} value="current" icon={Icon.CheckCircle} />
             {(archiveCount > 0 || filter === "archive") && <Grid.Dropdown.Item title={`Archive (${archiveCount})`} value="archive" icon={Icon.Box} />}
           </Grid.Dropdown.Section>
           <Grid.Dropdown.Section title="Collections">
@@ -845,16 +834,14 @@ export default function SetWallpaper({ fallbackText = "" }: Partial<LaunchProps>
       )}
       {!loading && shown.length === 0 && !(wallpapers.length === 0 && scanError) && (
         <Grid.EmptyView
-          icon={filter === "fav" ? Icon.Star : filter === "current" ? Icon.CheckCircle : Icon.Image}
-          title={searching ? "No matching wallpapers" : colour ? `No ${capitalise(colour)} Wallpapers in ${filterLabel}` : filter === "fav" ? "No favourites yet" : filter === "current" ? "No current wallpaper" : `Nothing in ${filterLabel}`}
+          icon={filter === "fav" ? Icon.Star : Icon.Image}
+          title={searching ? "No matching wallpapers" : colour ? `No ${capitalise(colour)} Wallpapers in ${filterLabel}` : filter === "fav" ? "No favourites yet" : `Nothing in ${filterLabel}`}
           description={
             searching
               ? "Try another search or clear it to see this collection."
               : filter === "fav"
                 ? "Press Ctrl+F on any wallpaper to keep it at the top of the library."
-                : filter === "current"
-                  ? "Set a wallpaper from the picker to see it here."
-                  : colour && !canCreatePreviews
+                : colour && !canCreatePreviews
                     ? "Install ImageMagick, then refresh the library to detect wallpaper colours."
                   : colour && wallpapers.some((w) => !w.color)
                     ? "Wallpaper colours are still being detected. Previews update as they finish; Ctrl+R retries detection."
