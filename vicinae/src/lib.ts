@@ -429,7 +429,16 @@ export const ACCENTS: { name: string; hex: string; keywords: string[] }[] = [
   { name: "Slate", hex: hslHex(214, 0.16, 0.55), keywords: ["grey", "gray", "neutral", "cool"] },
 ];
 
-// "Deep Blue" / "Light Blue" when one image yields two blues.
+// Two of a family get told apart. Matugen gives its primaries one tone, so they
+// usually differ in hue, not lightness (median 15 degrees on 179 real wallpapers): "Pink Red" and "Orange Red". "Deep Blue" / "Light Blue" only when
+// the lightness really differs.
+const WHEEL = ["red", "orange", "yellow", "green", "teal", "blue", "purple", "pink"];
+// CIE L*, the scale of matugen's tones; HSL lightness calls a gold darker than a peach.
+function toneOf(hex: string): number {
+  const lin = (rgbOf(hex) ?? [0, 0, 0]).map((c) => c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4);
+  const y = 0.2126 * lin[0] + 0.7152 * lin[1] + 0.0722 * lin[2];
+  return y > 216 / 24389 ? 116 * Math.cbrt(y) - 16 : y * 24389 / 27;
+}
 export function namePalettes(hexes: string[]): string[] {
   const words: Record<number, string[]> = { 2: ["Deep", "Light"], 3: ["Deep", "Mid", "Light"], 4: ["Deepest", "Deep", "Light", "Lightest"] };
   const names = hexes.map((hex) => capitalise(accentFamilyOf(hex)) || "Colour");
@@ -437,6 +446,20 @@ export function namePalettes(hexes: string[]): string[] {
   for (const name of new Set(names)) {
     const same = names.flatMap((n, i) => (n === name ? [i] : []));
     if (same.length < 2) continue;
+    const at = WHEEL.indexOf(name.toLowerCase());
+    const tones = same.map((i) => toneOf(hexes[i]));
+    if (at >= 0 && same.length < 4 && Math.max(...tones) - Math.min(...tones) < 10) {
+      // Red straddles 0 degrees, so every hue is measured from the start of its band.
+      const start = at === 0 ? 345 : BANDS[at - 1][1];
+      const turn = (i: number) => {
+        const rgb = rgbOf(hexes[i]) ?? [0, 0, 0];
+        const max = Math.max(...rgb);
+        return (hueOf(rgb, max, max - Math.min(...rgb)) - start + 360) % 360;
+      };
+      const lean = [`${capitalise(WHEEL[(at + 7) % 8])} `, ...(same.length === 3 ? [""] : []), `${capitalise(WHEEL[(at + 1) % 8])} `];
+      same.sort((a, b) => turn(a) - turn(b)).forEach((i, rank) => { out[i] = lean[rank] + name; });
+      continue;
+    }
     same.sort((a, b) => lightnessOf(hexes[a]) - lightnessOf(hexes[b]))
       .forEach((i, rank) => { out[i] = `${words[same.length][rank]} ${name}`; });
   }
@@ -687,10 +710,13 @@ export function accentFamilyOf(hex: string): string {
   return chroma < 0.06 ? "neutral" : hueBandOf(rgb, max, chroma);
 }
 
-function hueBandOf([r, g, b]: [number, number, number], max: number, chroma: number): string {
-  let h = max === r ? ((g - b) / chroma) % 6 : max === g ? (b - r) / chroma + 2 : (r - g) / chroma + 4;
-  h *= 60;
-  if (h < 0) h += 360;
+function hueOf([r, g, b]: [number, number, number], max: number, chroma: number): number {
+  const h = (max === r ? ((g - b) / chroma) % 6 : max === g ? (b - r) / chroma + 2 : (r - g) / chroma + 4) * 60;
+  return h < 0 ? h + 360 : h;
+}
+
+function hueBandOf(rgb: [number, number, number], max: number, chroma: number): string {
+  const h = hueOf(rgb, max, chroma);
   return BANDS.find(([, from, to]) => h >= from && h < to)?.[0] ?? "red";
 }
 

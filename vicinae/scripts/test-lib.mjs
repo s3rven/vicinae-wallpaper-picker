@@ -42,6 +42,9 @@ try {
     { index: 2, primary: "#ddeeff", tertiary: "#445566", surface: "#000000" },
   ]);
   assert.deepEqual(lib.namePalettes(["#2255aa", "#ee3333", "#99bbff"]), ["Deep Blue", "Red", "Light Blue"]);
+  // Equally light primaries differ in hue: name the side each leans to, across red's 0 degrees too.
+  assert.deepEqual(lib.namePalettes(["#ffb2b9", "#ffb4a7", "#feb0d2"]), ["Pink Red", "Orange Red", "Pink"]);
+  assert.deepEqual(lib.namePalettes(["#a9c7ff", "#bec2ff", "#9acbfa"]), ["Blue", "Purple Blue", "Teal Blue"]);
   // Matugen's light accents: a lavender and an orchid are colours, its greys are not.
   assert.deepEqual(lib.namePalettes(["#c1c1ff", "#eab5ee", "#e3b7f3", "#c7c6c6"]), ["Blue", "Pink", "Purple", "Neutral"]);
   assert.equal(lib.groupOf("#c1c1ff"), "neutral");
