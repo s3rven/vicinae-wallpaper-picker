@@ -134,12 +134,12 @@ const folderFilter = (folder: string) => `f:${folder}`;
 // here, or the window closes and nothing changes. Both awaits swallow errors: an
 // unhandled rejection in an onAction kills the worker, and closeMainWindow()
 // can lose a race with the window's own teardown.
-async function applyAndClose(path: string, options?: ApplyOptions): Promise<void> {
+async function startApply(path: string, options?: ApplyOptions): Promise<boolean> {
   const missing = missingTools({ path });
   if (missing.length) {
     await showToast({ style: Toast.Style.Failure, title: "Missing wallpaper tools",
       message: `Install ${missing.join(", ")} and try again.` }).catch(() => undefined);
-    return;
+    return false;
   }
   if (!applyWallpaper(path, options)) {
     await showToast({
@@ -147,9 +147,13 @@ async function applyAndClose(path: string, options?: ApplyOptions): Promise<void
       title: "Could not start wallpaper apply",
       message: "The image or wallpaper-picker backend is missing. Ctrl+R rescans the library.",
     }).catch(() => undefined);
-    return;
+    return false;
   }
-  await closeMainWindow().catch(() => undefined);
+  return true;
+}
+
+async function applyAndClose(path: string, options?: ApplyOptions): Promise<void> {
+  if (await startApply(path, options)) await closeMainWindow().catch(() => undefined);
 }
 
 type Group = { key: string; title: string; items: Wallpaper[] };
@@ -298,6 +302,10 @@ export default function SetWallpaper({ fallbackText = "" }: Partial<LaunchProps>
   const [recent] = useState(() => readHistory());
   const [live, setLive] = useState<LiveStatus | null>(readLiveStatus);
   const [selectedPath, setSelectedPath] = useState("");
+  // Set from this open picker with Ctrl+T. The scan's `current` stays as it was,
+  // because moving the new one to the front would reorder the grid under the cursor.
+  const [onDesktop, setOnDesktop] = useState("");
+  const isCurrent = useCallback((w: Wallpaper) => onDesktop ? w.path === onDesktop : w.current, [onDesktop]);
   // The panel below is rebuilt only after Vicinae receives the next render (throttled
   // to ~16 ms), so Enter right after an arrow key runs the previous tile's panel.
   // Its handlers act on the tile Vicinae last reported instead.
@@ -441,7 +449,7 @@ export default function SetWallpaper({ fallbackText = "" }: Partial<LaunchProps>
   const shown = useMemo(() => searchLibrary(filtered, browseMode ? "" : query, searchIndex), [filtered, browseMode, query, searchIndex]);
   const searching = !browseMode && query.trim().length > 0;
 
-  const randomCandidates = useMemo(() => shown.filter((w) => !w.current && !isLive(w.path)), [shown]);
+  const randomCandidates = useMemo(() => shown.filter((w) => !isCurrent(w) && !isLive(w.path)), [shown, isCurrent]);
 
   // The whole-library views (All, Stills, Live) lead with the current wallpaper
   // and the favourites, so the picker opens on what is on the desktop. A folder,
@@ -544,12 +552,20 @@ export default function SetWallpaper({ fallbackText = "" }: Partial<LaunchProps>
       <Action title="Choose Wallpaper Colour" icon={Icon.Swatch}
         onAction={() => {
           const t = target();
-          push(<WallpaperColours key={t.path} wallpaper={t} onApply={(choice) => applyAndClose(t.path, { ...applyOptions, ...choice })} />);
+          push(<WallpaperColours key={t.path} wallpaper={{ ...t, current: isCurrent(t) }} onApply={(choice) => applyAndClose(t.path, { ...applyOptions, ...choice })} />);
         }} />
     );
     const wallpaperAction = (
       <Action title="Set Wallpaper" icon={Icon.Image}
         onAction={() => void applyAndClose(target().path, applyOptions)} />
+    );
+    // Lets a run of wallpapers be compared on the desktop without reopening the picker.
+    const stayAction = (
+      <Action title="Set and Keep Open" icon={Icon.Eye} shortcut={{ modifiers: ["cmd"], key: "t" }}
+        onAction={async () => {
+          const t = target();
+          if (await startApply(t.path, applyOptions)) setOnDesktop(t.path);
+        }} />
     );
     // Draws from what the dropdown is showing, not the whole library, so the
     // filter is the knob: "Colours > Blue" then Ctrl+Shift+R is a random blue
@@ -571,6 +587,7 @@ export default function SetWallpaper({ fallbackText = "" }: Partial<LaunchProps>
         <ActionPanel.Section>
           {chooseColour ? colourAction : wallpaperAction}
           {chooseColour ? wallpaperAction : colourAction}
+          {stayAction}
           {randomAction}
           <Action.Push title="Set Solid Colour" icon={Icon.Swatch} target={<SolidColour options={applyOptions} />} />
           {transitionActions()}
@@ -675,7 +692,7 @@ export default function SetWallpaper({ fallbackText = "" }: Partial<LaunchProps>
       <Grid.Item
         key={w.path}
         id={w.path}
-        content={{ value: preview ?? (isLive(w.path) ? Icon.Video : Icon.Image), tooltip: [name || prettyName(w.name), w.current ? "Current" : "", starred ? "Favourite" : "", isLive(w.path) ? "Live" : "", w.folder !== "Root" ? folderLabel(w.folder) : "", w.resolution, !preview ? "Preview pending · Ctrl+R to retry" : ""].filter(Boolean).join(" · ") }}
+        content={{ value: preview ?? (isLive(w.path) ? Icon.Video : Icon.Image), tooltip: [name || prettyName(w.name), isCurrent(w) ? "Current" : "", starred ? "Favourite" : "", isLive(w.path) ? "Live" : "", w.folder !== "Root" ? folderLabel(w.folder) : "", w.resolution, !preview ? "Preview pending · Ctrl+R to retry" : ""].filter(Boolean).join(" · ") }}
       />
     );
   }
@@ -694,7 +711,7 @@ export default function SetWallpaper({ fallbackText = "" }: Partial<LaunchProps>
   // gives most files a real title.
   const caption = selected
     ? [selected.title || readableName(selected.name) || prettyName(selected.name),
-      isLive(selected.path) ? "Live" : "", selected.current ? "Current" : "", favourites.has(selected.path) ? "Favourite" : ""].filter(Boolean).join(" · ")
+      isLive(selected.path) ? "Live" : "", isCurrent(selected) ? "Current" : "", favourites.has(selected.path) ? "Favourite" : ""].filter(Boolean).join(" · ")
     : `Wallpapers${colour ? ` · ${capitalise(colour)}` : ""} · ${shown.length}`;
 
   const filterLabel =

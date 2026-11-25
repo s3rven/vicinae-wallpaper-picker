@@ -110,6 +110,7 @@ favourites and local settings are kept outside the checkout.
 |---|---|
 | Enter | Choose colours, then apply |
 | Shift+Enter | Set immediately (or open colours when immediate apply is the default) |
+| Ctrl+T | Set and keep the picker open, to compare a few on the desktop |
 | Ctrl+Shift+R | Random still from the current search/filter |
 | Ctrl+F | Add/remove favourite |
 | Ctrl+Shift+F | Filter by colour, within the current collection |
