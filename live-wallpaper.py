@@ -36,9 +36,13 @@ STATE = os.path.join(os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.
 POLICY_FILE = os.path.join(STATE, "live-pause-when")
 PAUSED_FILE = os.path.join(STATE, "live-paused")
 RUNTIME = os.environ.get("XDG_RUNTIME_DIR")
+SIGNATURE = os.environ.get("HYPRLAND_INSTANCE_SIGNATURE")
+HYPR_RUNTIME = None
+if RUNTIME and SIGNATURE and SIGNATURE not in (".", "..") and "/" not in SIGNATURE:
+    HYPR_RUNTIME = os.path.join(RUNTIME, "hypr", SIGNATURE)
 CACHE = os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache")
 PLAYER_RUNTIME = os.path.join(RUNTIME or CACHE, "wallpaper-picker", "runtime")
-IDLE_FILE = os.path.join(PLAYER_RUNTIME, "live-idle")
+IDLE_FILE = os.path.join(HYPR_RUNTIME or PLAYER_RUNTIME, "live-idle")
 UNIT = "wallpaper-live.service"
 POLICIES = ("never", "covered", "windows")
 DEFAULT_POLICY = "covered"
@@ -70,14 +74,19 @@ def covered_outputs(policy, monitors, workspaces):
     """Names of outputs whose visible workspace hides the wallpaper under `policy`."""
     if policy == "never":
         return set()
-    by_id = {w.get("id"): w for w in workspaces}
+    def key(w):
+        # Hyprland 0.57 gives named/special workspaces an address and no numeric
+        # id; keying by id alone made them all collide under None.
+        w = w or {}
+        return w.get("address") or w.get("id") or None
+    by_key = {key(w): w for w in workspaces}
     hidden = set()
     for m in monitors:
         # An open special workspace (scratchpad) sits above the regular one.
-        shown = [by_id.get((m.get("activeWorkspace") or {}).get("id"))]
-        special = (m.get("specialWorkspace") or {}).get("id")
+        shown = [by_key.get(key(m.get("activeWorkspace")))]
+        special = key(m.get("specialWorkspace"))
         if special:
-            shown.append(by_id.get(special))
+            shown.append(by_key.get(special))
         for w in filter(None, shown):
             # hasfullscreen is true for maximized windows too (fullscreen mode 1).
             if w.get("hasfullscreen") or (policy == "windows" and w.get("windows", 0) > 0):
@@ -86,8 +95,7 @@ def covered_outputs(policy, monitors, workspaces):
 
 
 def hypr_socket(name):
-    sig = os.environ.get("HYPRLAND_INSTANCE_SIGNATURE")
-    return os.path.join(RUNTIME, "hypr", sig, name) if RUNTIME and sig else None
+    return os.path.join(HYPR_RUNTIME, name) if HYPR_RUNTIME else None
 
 
 def hypr_query(what):
@@ -256,11 +264,17 @@ def main(argv):
         set_paused(cmd == "pause" or (cmd == "toggle" and not manually_paused()))
         return 0
     if cmd in ("idle", "active") and len(argv) == 2:
-        os.makedirs(PLAYER_RUNTIME, mode=0o700, exist_ok=True)
-        if cmd == "idle":
-            open(IDLE_FILE, "w").close()
-        elif os.path.exists(IDLE_FILE):
-            os.unlink(IDLE_FILE)
+        try:
+            if cmd == "idle":
+                if not HYPR_RUNTIME:
+                    os.makedirs(PLAYER_RUNTIME, mode=0o700, exist_ok=True)
+                open(IDLE_FILE, "w").close()
+            else:
+                os.unlink(IDLE_FILE)
+        except FileNotFoundError:
+            # The compositor can exit before its idle callback completes.
+            if cmd == "idle" and not HYPR_RUNTIME:
+                raise
         notify_unit()
         return 0
     if cmd == "policy" and len(argv) == 3 and argv[2] in POLICIES:

@@ -49,6 +49,21 @@ class Rules(unittest.TestCase):
     def test_unknown_workspace_is_not_covered(self):
         self.assertEqual(self.covered("windows", monitor("A", 42)), set())
 
+    def test_057_address_only_workspaces_never_collide(self):
+        # 0.57 shape: special/named workspaces carry an address and no id.
+        empty = {"address": "1", "id": 1, "windows": 0, "hasfullscreen": False}
+        scratch = {"address": "special:scratchpad", "windows": 1, "hasfullscreen": False}
+        named = {"address": "name:game", "windows": 1, "hasfullscreen": True}
+        idle = {"address": "special:magic", "windows": 0, "hasfullscreen": False}
+        def mon(active, special=None):
+            return {"name": "A", "activeWorkspace": {"address": active["address"]},
+                    "specialWorkspace": {"address": special["address"] if special else ""}}
+        for order in ([empty, scratch, named, idle], [idle, named, scratch, empty]):
+            with self.subTest(order=[w["address"] for w in order]):
+                self.assertEqual(live.covered_outputs("windows", [mon(empty, scratch)], order), {"A"})
+                self.assertEqual(live.covered_outputs("covered", [mon(named, idle)], order), {"A"})
+                self.assertEqual(live.covered_outputs("windows", [mon(empty)], order), set())
+
 
 class Controls(unittest.TestCase):
     def test_settings_work_without_systemd_or_a_runtime_directory(self):
@@ -185,6 +200,14 @@ while True:
         proc.send_signal(signal.SIGHUP)
         self.wait_for(lambda: len(self.records("cmd")) == 4)
         self.assertTrue(all(r["cmd"][2] is False for r in self.records("cmd")[2:]))
+
+    def test_restarted_compositor_ignores_previous_compositors_idle_marker(self):
+        old = Path(self.tmp.name) / "hypr" / "old"
+        old.mkdir()
+        subprocess.run([sys.executable, str(ROOT / "live-wallpaper.py"), "idle"],
+                       env=self.env | {"HYPRLAND_INSTANCE_SIGNATURE": "old"}, check=True, timeout=5)
+        self.start("never")
+        self.assertTrue(all(not record["start_paused"] for record in self.records("start_paused")))
 
     def test_unplugged_output_keeps_the_others_playing(self):
         proc = self.start("never")
