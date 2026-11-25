@@ -77,8 +77,8 @@ favourites and local settings are kept outside the checkout.
 
 ## Features
 
-- **Pictures first.** The grid shows thumbnails only and opens on your current
-  wallpaper, with favourites after it. The footer names the selected one;
+- **Pictures first.** The grid shows thumbnails only. All, Stills and Live open
+  on your current wallpaper, with favourites after it. The footer names the selected one;
   names also live in tooltips and search.
 - **Collections and filters.** Subfolders become collections, and Archive/Old
   folders get their own filter. Filter by colour (**Ctrl+Shift+F**), favourites,
@@ -169,9 +169,10 @@ Open the action panel and choose **Transition** to pick an effect or duration.
 **Use Extension Defaults** returns both to the extension preferences, and
 **None** changes images immediately.
 
-Fade is the default, at 0.28 seconds. Wipes take about 0.32 seconds, wave 0.38
-and circular reveals 0.4. Frame pacing follows your display's refresh rate.
-**Auto** uses each effect's tuned duration.
+Fade is the default: an eased 0.36-second crossfade. Wipes take about 0.55
+seconds, and wave and circular reveals 0.6, on an ease-out curve that lands
+softly. Frame pacing follows your display's refresh rate. **Auto** uses each effect's tuned duration. When Hyprland
+animations are off (`animations:enabled = false`), every change is instant.
 
 ## Local settings and hooks
 
@@ -266,7 +267,8 @@ Configuration, state, cache and runtime paths respect the corresponding XDG
 variables. Defaults:
 
 - State: `~/.local/state/wallpaper-picker/`, including `current`, `current-image`
-  (a still-image symlink), `previous`, `fit`, `favourites` and `last-apply.log`.
+  (a still-image symlink), `previous`, `fit`, `favourites`, `last-apply.log` and
+  `history` (one `TIME<TAB>PATH` line per wallpaper change).
 - Cache: `~/.cache/wallpaper-picker/`.
 - Live sockets/flags: `$XDG_RUNTIME_DIR/wallpaper-picker/runtime`, or a private
   directory under the picker cache when no runtime directory is available.

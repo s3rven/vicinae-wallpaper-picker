@@ -4,6 +4,7 @@ import fcntl
 import json
 import os
 from pathlib import Path
+import signal
 import subprocess
 import sys
 import tempfile
@@ -43,7 +44,8 @@ class Pipeline(unittest.TestCase):
                 {"name": "DP-3", "description": "Portrait Panel", "refreshRate": 180},
             ]),
         )
-        self.program("hyprctl", "print(os.environ['TEST_MONITORS'])")
+        self.program("hyprctl", "print(os.environ['TEST_MONITORS'])\n"
+                     "if '--batch' in sys.argv: print(os.environ.get('TEST_ANIMATIONS', '{\"bool\":true}'))")
         self.program("awww", """
 if sys.argv[1:2] == ['query']:
     if '--json' in sys.argv:
@@ -52,6 +54,8 @@ if sys.argv[1:2] == ['query']:
     sys.exit(1 if count <= int(os.environ.get('TEST_QUERY_FAILURES', '0')) else 0)
 if sys.argv[1:2] == ['img']:
     sys.exit(int(os.environ['TEST_AWWW_STATUS']))
+if sys.argv[1:2] == ['restore']:
+    sys.exit(int(os.environ.get('TEST_RESTORE_STATUS', '0')))
 """)
         # Never start or signal anything in the real desktop session.
         for name in ("awww-daemon", "notify-send", "systemctl", "systemd-run", "mpvpaper", "hook"):
@@ -102,7 +106,6 @@ if sys.argv[1:2] == ['img']:
         self.assertEqual(self.current.read_text(), str(self.old) + "\n")
         self.assertEqual((self.state / "current-image").resolve(), self.old)
         self.assertFalse((self.state / "previous").exists())
-        self.assertFalse((self.state / "applying").exists())
         self.assertTrue(self.calls("notify-send"))
         self.assertIn(str(self.old), self.images()[-2])
 
@@ -114,7 +117,6 @@ if sys.argv[1:2] == ['img']:
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(self.current.read_text(), str(self.old) + "\n")
         self.assertEqual((self.state / "current-image").resolve(), self.old)
-        self.assertFalse((self.state / "applying").exists())
         self.assertFalse((self.state / "previous").exists())
 
     def test_previous_swaps_and_same_image_does_not_replace_itself(self):
@@ -123,6 +125,27 @@ if sys.argv[1:2] == ['img']:
         self.assertEqual((self.state / "previous").read_text(), str(self.old) + "\n")
         self.assertEqual(self.run_script("apply-wallpaper.sh", self.old, "none").returncode, 0)
         self.assertEqual((self.state / "previous").read_text(), str(self.new) + "\n")
+
+    def test_history_logs_each_change_once_and_never_a_failure(self):
+        history = self.state / "history"
+        self.assertEqual(self.apply().returncode, 0)
+        self.assertEqual(self.apply().returncode, 0)  # same image again: not a new pick
+        self.env["WALLPAPER_PICKER_PALETTE"] = "1"
+        self.assertEqual(self.apply().returncode, 0)  # palette change on the same image
+        del self.env["WALLPAPER_PICKER_PALETTE"]
+        self.env["TEST_AWWW_STATUS"] = "9"
+        self.assertNotEqual(self.run_script("apply-wallpaper.sh", self.old, "none").returncode, 0)
+        self.env["TEST_AWWW_STATUS"] = "0"
+        self.assertEqual(self.run_script("apply-wallpaper.sh", self.old, "none").returncode, 0)
+        lines = [line.split("\t") for line in history.read_text().splitlines()]
+        self.assertEqual([path for _, path in lines], [str(self.new), str(self.old)])
+        self.assertRegex(lines[0][0], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d[+-]\d{4}$")
+        self.assertEqual(history.stat().st_mode & 0o777, 0o600)
+
+    def test_history_failure_does_not_fail_the_apply(self):
+        self.env["WALLPAPER_PICKER_HISTORY"] = str(self.home / "no-such-dir/history")
+        self.assertEqual(self.apply().returncode, 0)
+        self.assertEqual(self.current.read_text(), str(self.new) + "\n")
 
     def test_fit_and_restore_share_the_same_contract(self):
         self.env.update(WALLPAPER_RESIZE_MODE="fit", WALLPAPER_SCALING_FILTER="Lanczos3", WALLPAPER_CROP_GRAVITY="top")
@@ -172,16 +195,16 @@ if sys.argv[1:2] == ['img']:
         self.assertEqual(result.returncode, 0, result.stderr)
         image = next(c for c in self.images() if str(self.new) in c)
         self.assertEqual(image[image.index("--transition-type") + 1], "fade")
-        self.assertEqual(image[image.index("--transition-duration") + 1], "0.28")
+        self.assertEqual(image[image.index("--transition-duration") + 1], "0.36")
         self.assertFalse(any(call[1].endswith(".webp") for call in self.images()))
         self.assertFalse((self.home / "cache/wallpaper-picker/doom").exists())
 
     def test_native_presets_have_short_durations_and_their_own_direction(self):
-        presets = [("soft-fade", "fade", "0.28", "90"),
-                   ("diagonal-wipe", "wipe", "0.32", "35"),
-                   ("spotlight-wave", "grow", "0.4", "90"),
-                   ("iris-close", "outer", "0.4", "90"),
-                   ("wave-sweep", "wave", "0.38", "90")]
+        presets = [("soft-fade", "fade", "0.36", "90"),
+                   ("diagonal-wipe", "wipe", "0.55", "35"),
+                   ("spotlight-wave", "grow", "0.6", "90"),
+                   ("iris-close", "outer", "0.6", "90"),
+                   ("wave-sweep", "wave", "0.6", "90")]
         for name, effect, duration, angle in presets:
             with self.subTest(name=name):
                 self.trace.unlink(missing_ok=True)
@@ -189,8 +212,53 @@ if sys.argv[1:2] == ['img']:
                 self.assertEqual(result.returncode, 0, result.stderr)
                 image = next(c for c in self.images() if str(self.new) in c)
                 for flag, value in [("--transition-type", effect), ("--transition-duration", duration),
-                                    ("--transition-angle", angle), ("--transition-bezier", ".22,1,.36,1")]:
+                                    ("--transition-angle", angle), ("--transition-bezier", ".4,0,.6,1" if effect == "fade" else ".33,1,.68,1")]:
                     self.assertEqual(image[image.index(flag) + 1], value)
+
+    def test_reduced_motion_makes_selected_effects_instant(self):
+        for setting in ('{"bool":false}', '{"int":0}'):
+            with self.subTest(setting=setting):
+                self.trace.unlink(missing_ok=True)
+                self.env["TEST_ANIMATIONS"] = setting
+                result = self.run_script("apply-wallpaper.sh", self.new, "wave-sweep")
+                self.assertEqual(result.returncode, 0, result.stderr)
+                image = next(c for c in self.images() if str(self.new) in c)
+                self.assertEqual(image.count("--transition-type"), 1)
+                self.assertEqual(image[image.index("--transition-type") + 1], "none")
+                self.assertEqual(len(self.calls("hyprctl")), 1)
+
+    def test_unavailable_animation_option_keeps_the_selected_effect(self):
+        # hyprctl answers an unknown option in plain text, even with -j.
+        for reply in ('{"error":"unknown option"}', 'no such option'):
+            with self.subTest(reply=reply):
+                self.trace.unlink(missing_ok=True)
+                self.env["TEST_ANIMATIONS"] = reply
+                result = self.run_script("apply-wallpaper.sh", self.new, "soft-fade")
+                self.assertEqual(result.returncode, 0, result.stderr)
+                image = next(c for c in self.images() if str(self.new) in c)
+                self.assertEqual(image[image.index("--transition-type") + 1], "fade")
+                # Monitor routing from the same snapshot must survive it.
+                self.assertEqual(image[image.index("-o") + 1], "eDP-2")
+                self.assertTrue(any("0x000000" in c and "DP-3" in c for c in self.images()))
+
+    def test_reduced_motion_removes_live_handoff_delay_with_joined_options(self):
+        self.env.update(TEST_ANIMATIONS='{"bool":false}',
+                        TEST_VIDEO=str(self.home / "clip.mp4"), TEST_POSTER=str(self.new),
+                        TEST_LIB=str(ROOT / "awww-lib.sh"), TEST_DELAY=str(self.home / "delay"))
+        result = subprocess.run(["bash", "-c", '''
+set -euo pipefail
+source "$TEST_LIB"
+live_require_tools() { :; }
+live_poster() { printf '%s\\n' "$TEST_POSTER"; }
+live_stop() { :; }
+live_start() { printf '%s\\n' "$3" > "$TEST_DELAY"; }
+awww_img_targeted "$TEST_VIDEO" --transition-type=fade --transition-duration 0.36
+'''], env=self.env, capture_output=True, text=True, timeout=5)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        image = next(c for c in self.images() if str(self.new) in c)
+        self.assertNotIn("--transition-type=fade", image)
+        self.assertEqual(image[image.index("--transition-type") + 1], "none")
+        self.assertEqual((self.home / "delay").read_text(), "0\n")
 
     def test_transition_tuning_keeps_explicit_overrides(self):
         self.env.update(WALLPAPER_TRANSITION_DURATION="0.2", WALLPAPER_TRANSITION_ANGLE="120",
@@ -384,6 +452,41 @@ if sys.argv[1:2] == ['img']:
         self.assertEqual(len([c for c in self.calls("awww") if c[0] == "query"]), 3)
         self.assertEqual(len(self.calls("awww-daemon")), 1)
 
+    def managed_daemon(self, state="loaded", display=None):
+        self.env["WAYLAND_DISPLAY"] = "wayland-fixture"
+        manager_display = display or self.env["WAYLAND_DISPLAY"]
+        self.program("systemctl", f"""
+if sys.argv[1:] == ['--user', 'show-environment']:
+    print('WAYLAND_DISPLAY=' + {manager_display!r})
+elif 'show' in sys.argv:
+    print({state!r})
+""")
+
+    def test_not_ready_managed_daemon_is_started_through_systemd(self):
+        self.env["TEST_QUERY_FAILURES"] = "2"
+        self.managed_daemon()
+        result = self.apply()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.calls("awww-daemon"), [])
+        self.assertIn(['--user', '--no-block', 'start', 'awww-daemon.service'], self.calls("systemctl"))
+
+    def test_a_masked_managed_daemon_is_not_bypassed(self):
+        self.env["TEST_QUERY_FAILURES"] = "2"
+        self.managed_daemon(state="masked")
+        result = self.apply()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("masked", result.stderr)
+        self.assertEqual(self.calls("awww-daemon"), [])
+        self.assertEqual(self.images(), [])
+
+    def test_nested_compositor_does_not_reuse_the_main_sessions_daemon(self):
+        self.env["TEST_QUERY_FAILURES"] = "2"
+        self.managed_daemon(display="wayland-main")
+        result = self.apply()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(self.calls("awww-daemon")), 1)
+        self.assertNotIn(['--user', '--no-block', 'start', 'awww-daemon.service'], self.calls("systemctl"))
+
     def test_video_requires_a_user_service_before_changing_image(self):
         video = self.home / "clip.mp4"
         video.touch()
@@ -408,6 +511,42 @@ if sys.argv[1:2] == ['img']:
         [player] = self.calls("systemd-run")
         self.assertEqual(player[-3:], ["run", str(video), "eDP-2"])
         self.assertIn("XDG_RUNTIME_DIR=" + str(self.home), player)
+
+    def test_restore_starts_the_player_before_its_oneshot_unit_exits(self):
+        # awww-restore.service is Type=oneshot: once the script exits, systemd
+        # kills its whole control group. Model that with a process-group kill.
+        video = self.home / "clip.mp4"
+        subprocess.run(["ffmpeg", "-nostdin", "-loglevel", "error", "-f", "lavfi", "-i", "color=c=teal:s=64x40:d=0.2", str(video)], check=True)
+        self.current.write_text(str(video) + "\n")
+        proc = subprocess.Popen(["bash", str(ROOT / "restore-wallpaper.sh")], env=self.env,
+                                stderr=subprocess.PIPE, start_new_session=True)
+        _, stderr = proc.communicate(timeout=15)
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        self.assertEqual(proc.returncode, 0, stderr)
+        [player] = self.calls("systemd-run")
+        self.assertEqual(player[-3:], ["run", str(video), "eDP-2"])
+
+    def test_refused_player_start_is_reported_even_with_a_working_cache_fallback(self):
+        video = self.home / "clip.mp4"
+        subprocess.run(["ffmpeg", "-nostdin", "-loglevel", "error", "-f", "lavfi", "-i",
+                        "color=c=teal:s=64x40:d=0.2", str(video)], check=True)
+        self.current.write_text(str(video) + "\n")
+        self.program("systemd-run", "print('player start refused', file=sys.stderr); sys.exit(71)")
+        result = self.run_script("restore-wallpaper.sh")
+        self.assertEqual(result.returncode, 71, result.stderr)
+        self.assertIn("player start refused", result.stderr)
+        self.assertIn(["restore"], self.calls("awww"))
+
+    def test_cache_failure_is_reported_even_if_blackout_succeeds(self):
+        self.current.unlink()
+        self.env["TEST_RESTORE_STATUS"] = "42"
+        result = self.run_script("restore-wallpaper.sh")
+        self.assertEqual(result.returncode, 42, result.stderr)
+        self.assertIn(["restore"], self.calls("awww"))
+        self.assertTrue(any("0x000000" in call and "DP-3" in call for call in self.images()))
 
     def test_restore_waits_for_apply_lock(self):
         fit = self.state / "fit"

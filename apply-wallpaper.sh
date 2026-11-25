@@ -16,22 +16,25 @@ case "$wallpaper" in *$'\n'*|*$'\t'*) printf 'Wallpaper filenames cannot contain
 transition=${2:-soft-fade}
 duration=${WALLPAPER_TRANSITION_DURATION:-}
 angle=${WALLPAPER_TRANSITION_ANGLE:-}
+bezier=${WALLPAPER_TRANSITION_BEZIER:-}
 resize=${WALLPAPER_RESIZE_MODE:-crop}
 filter=${WALLPAPER_SCALING_FILTER:-CatmullRom}
 gravity=${WALLPAPER_CROP_GRAVITY:-center}
 case "$resize" in crop|fit|stretch|no) ;; *) resize=crop ;; esac
 case "$filter" in Nearest|Bilinear|CatmullRom|Mitchell|Lanczos3) ;; *) filter=CatmullRom ;; esac
 case "$gravity" in top-left|top|top-right|left|center|right|bottom-left|bottom|bottom-right) ;; *) gravity=center ;; esac
+# Sweeps run ~0.55 s on ease-out-cubic: the old 0.32 s quint wipe was 90% done
+# in 120 ms, too fast to read as motion; this one is 90% done near 300 ms.
 case "$transition" in
-    spotlight-wave|spotlight|custom) transition=grow; duration=${duration:-0.4} ;;
-    iris-close) transition=outer; duration=${duration:-0.4} ;;
-    wave-sweep) transition=wave; duration=${duration:-0.38} ;;
-    diagonal-wipe) transition=wipe; duration=${duration:-0.32}; angle=${angle:-35} ;;
-    soft-fade|fade|doom) transition=fade; duration=${duration:-0.28} ;;
-    none|simple|grow|outer|wave|wipe|left|right|top|bottom|center|any|random) duration=${duration:-0.32} ;;
-    *) transition=fade; duration=${duration:-0.28} ;;
+    spotlight-wave|spotlight|custom) transition=grow; duration=${duration:-0.6} ;;
+    iris-close) transition=outer; duration=${duration:-0.6} ;;
+    wave-sweep) transition=wave; duration=${duration:-0.6} ;;
+    diagonal-wipe) transition=wipe; duration=${duration:-0.55}; angle=${angle:-35} ;;
+    soft-fade|fade|doom) transition=fade; duration=${duration:-0.36}; bezier=${bezier:-.4,0,.6,1} ;;
+    none|simple|grow|outer|wave|wipe|left|right|top|bottom|center|any|random) duration=${duration:-0.55} ;;
+    *) transition=fade; duration=${duration:-0.36}; bezier=${bezier:-.4,0,.6,1} ;;
 esac
-[[ "$duration" =~ ^([0-9]+([.][0-9]+)?|[.][0-9]+)$ ]] || duration=0.28
+[[ "$duration" =~ ^([0-9]+([.][0-9]+)?|[.][0-9]+)$ ]] || duration=0.36
 
 state_dir="${XDG_STATE_HOME:-$HOME/.local/state}/wallpaper-picker"
 # Generated solid colours fill the display even when ordinary images use Fit or Original.
@@ -44,6 +47,7 @@ custom_accent_state=${WALLPAPER_PICKER_CUSTOM_ACCENT:-"$state_dir/custom-accent"
 source_index_state=${WALLPAPER_PICKER_SOURCE_INDEX:-"$state_dir/source-index"}
 # "INDEX<TAB>PATH" per wallpaper whose chosen palette is not the first one, newest first.
 palettes_state=${WALLPAPER_PICKER_PALETTES:-"$state_dir/palettes"}
+history_state=${WALLPAPER_PICKER_HISTORY:-"$state_dir/history"}
 accent_changed=0
 if [ "${WALLPAPER_PICKER_ACCENT+x}" = x ]; then
     accent_changed=1
@@ -61,7 +65,6 @@ if [ -n "$palette" ]; then
     WALLPAPER_PICKER_ACCENT=""
 fi
 apply_lock=${WALLPAPER_PICKER_LOCK:-"$state_dir/apply.lock"}
-apply_marker=${WALLPAPER_PICKER_APPLY_MARKER:-"$state_dir/applying"}
 request_state="$state_dir/latest-request"
 request_token="$$.$RANDOM.$RANDOM"
 
@@ -148,13 +151,12 @@ finish() {
                 "Could not finish $stage. See $state_dir/last-apply.log for launcher applies." 9>&- >/dev/null 2>&1 || true
         fi
     fi
-    rm -f -- "$apply_marker" "$link_tmp"
+    rm -f -- "$link_tmp"
     exit "$rc"
 }
 trap finish EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
-atomic_write "$apply_marker" "$$"
 
 # A missing video dependency must not interrupt the current wallpaper.
 if is_live "$wallpaper"; then live_require_tools; fi
@@ -165,7 +167,7 @@ args=(--resize "$resize" --filter "$filter" --crop-gravity "$gravity"
       --transition-type "$transition" --transition-duration "$duration"
       --transition-pos "${WALLPAPER_TRANSITION_POS:-center}"
       --transition-angle "${angle:-90}"
-      --transition-bezier "${WALLPAPER_TRANSITION_BEZIER:-.22,1,.36,1}"
+      --transition-bezier "${bezier:-.33,1,.68,1}"
       --transition-wave "${WALLPAPER_TRANSITION_WAVE:-24,18}")
 [ -z "${WALLPAPER_TRANSITION_FPS:-}" ] || args+=(--transition-fps "$WALLPAPER_TRANSITION_FPS")
 if ! awww_img_targeted "$wallpaper" "${args[@]}"; then
@@ -204,6 +206,10 @@ attempted=false
 # Only a memory for later applies: losing it must not fail this one.
 if [ "$accent_changed" = 1 ] && [ -z "$WALLPAPER_PICKER_ACCENT" ]; then
     remember_palette "${palette:-0}" "$wallpaper" || true
+fi
+# "TIME<TAB>PATH" per wallpaper change, so usage is known without guessing from caches.
+if [ "$old_wallpaper" != "$wallpaper" ]; then
+    (umask 077 && printf '%(%FT%T%z)T\t%s\n' -1 "$wallpaper" >>"$history_state") 2>/dev/null || true
 fi
 
 # A hook is opt-in. Its failure cannot undo a successfully applied wallpaper.

@@ -224,11 +224,11 @@
       "type": "dropdown",
       "required": false,
       "title": "Wallpaper transition",
-      "description": "Fast native awww effects. Auto duration is tuned for each effect.",
+      "description": "Native awww effects. Auto uses each effect's tuned duration.",
       "default": "soft-fade",
       "data": [
         {
-          "title": "Fade \u2014 quick and smooth",
+          "title": "Fade \u2014 soft crossfade",
           "value": "soft-fade"
         },
         {
@@ -244,7 +244,7 @@
           "value": "wave-sweep"
         },
         {
-          "title": "Diagonal wipe \u2014 quick change",
+          "title": "Diagonal wipe \u2014 corner to corner",
           "value": "diagonal-wipe"
         },
         {
@@ -294,19 +294,19 @@
           "value": "0.2"
         },
         {
-          "title": "0.3 s \u2014 very fast",
+          "title": "0.3 s \u2014 quick",
           "value": "0.3"
         },
         {
-          "title": "0.4 s \u2014 gentle",
+          "title": "0.4 s \u2014 brisk",
           "value": "0.4"
         },
         {
-          "title": "0.5 s \u2014 fast",
+          "title": "0.5 s \u2014 smooth",
           "value": "0.5"
         },
         {
-          "title": "0.65 s \u2014 smooth",
+          "title": "0.65 s \u2014 gentle",
           "value": "0.65"
         },
         {
