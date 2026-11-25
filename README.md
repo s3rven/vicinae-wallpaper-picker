@@ -1,6 +1,6 @@
 # Vicinae Wallpaper Picker
 
-![Wallpaper Picker for Vicinae, showcasing a library of blue wallpapers](docs/images/wallpaper-picker-hero.png)
+![The picker's thumbnail grid in Vicinae, sorted by colour, over a dark landscape wallpaper](docs/images/picker.webp)
 
 Browse and switch wallpapers from [Vicinae](https://vicinae.com): a thumbnail
 grid for still images and live wallpapers, with favourites, collections, colour
@@ -78,12 +78,14 @@ favourites and local settings are kept outside the checkout.
 ## Features
 
 - **Pictures first.** The grid shows thumbnails only. All, Stills and Live open
-  on your current wallpaper, with favourites after it. The footer names the selected one;
-  names also live in tooltips and search.
+  on your current wallpaper, with favourites after it. The footer names the
+  selected one; names also live in tooltips and search.
 - **Collections and filters.** Subfolders become collections, and Archive/Old
   folders get their own filter. Filter by colour (**Ctrl+Shift+F**), favourites,
-  live or still, and combine a colour with a collection. The picker
-  remembers your filter and sort.
+  live or still, or **Recently Used**, and combine a colour with a collection.
+  The picker remembers your filter and sort.
+- **Compare on the desktop.** **Ctrl+T** sets the selected wallpaper and keeps
+  the picker open, so you can try a few in a row.
 - **Search** matches names, titles, tags, folders and colour names.
   Abbreviations such as `lndscp` work when nothing matches literally.
 - **Sort** by colour, date or name. Names sort naturally (Night 2 before Night 10).
@@ -147,6 +149,8 @@ It starts awww-daemon when needed. Restoring does not run post-apply hooks.
 
 **Enter** on a wallpaper opens its colours, with the wallpaper beside the list.
 
+![The colour step: three palettes from a red sunset wallpaper, then muted accent presets](docs/images/colours.webp)
+
 - **From This Wallpaper:** up to four matugen palettes of the image. Each shows
   the accent, complement and surface your theme will get. A palette belongs to
   its wallpaper: Previous, Random and a direct apply bring that wallpaper back
@@ -172,8 +176,9 @@ Open the action panel and choose **Transition** to pick an effect or duration.
 
 Fade is the default: an eased 0.36-second crossfade. Wipes take about 0.55
 seconds, and wave and circular reveals 0.6, on an ease-out curve that lands
-softly. Frame pacing follows your display's refresh rate. **Auto** uses each effect's tuned duration. When Hyprland
-animations are off (`animations:enabled = false`), every change is instant.
+softly. **Auto** uses each effect's tuned duration. Frame pacing follows your
+display's refresh rate. When Hyprland animations are off
+(`animations:enabled = false`), every change is instant.
 
 ## Local settings and hooks
 
