@@ -19,33 +19,71 @@ AWWW_BLACKOUT_COLOR="${AWWW_BLACKOUT_COLOR:-0x000000}"
 # bounded readiness check between regular applies and session/hotplug restores.
 awww_ensure_ready() {
     command -v awww >/dev/null 2>&1 || return 127
-    awww query >/dev/null 2>&1 && return 0
-    command -v awww-daemon >/dev/null 2>&1 || return 127
-    # Processes in other users/sessions say nothing about this session's socket.
-    # A daemon that is already running can reject the duplicate startup safely.
-    awww-daemon 9>&- >/dev/null 2>&1 &
-    local _attempt
-    for _attempt in {1..20}; do
+    timeout --kill-after=0.2s 1s awww query >/dev/null 2>&1 && return 0
+    local manager_display="" unit_state="" deadline
+    if [ -n "${WAYLAND_DISPLAY:-}" ] && command -v systemctl >/dev/null 2>&1; then
+        manager_display=$(timeout --kill-after=0.2s 2s systemctl --user show-environment 2>/dev/null |
+            sed -n 's/^WAYLAND_DISPLAY=//p') || manager_display=""
+        # A nested compositor shares the user manager, but needs its own daemon.
+        # Only delegate when that manager actually targets this Wayland display.
+        if [ "$manager_display" = "$WAYLAND_DISPLAY" ]; then
+            unit_state=$(timeout --kill-after=0.2s 2s systemctl --user show \
+                awww-daemon.service --property=LoadState --value 2>/dev/null) || unit_state=""
+        fi
+    fi
+    case "$unit_state" in
+        loaded)
+            # Never start a competing unmanaged daemon behind systemd's back.
+            # Non-blocking avoids waiting on a restore worker's own dependency.
+            timeout --kill-after=0.2s 3s systemctl --user --no-block start \
+                awww-daemon.service >/dev/null 2>&1 || return 1
+            ;;
+        masked)
+            printf 'awww-daemon.service is masked; unmask it before applying a wallpaper.\n' >&2
+            return 1
+            ;;
+        *)
+            command -v awww-daemon >/dev/null 2>&1 || return 127
+            awww-daemon 9>&- >/dev/null 2>&1 &
+            ;;
+    esac
+    deadline=$((SECONDS + 5))
+    while ((SECONDS < deadline)); do
         sleep 0.1
-        awww query >/dev/null 2>&1 && return 0
+        timeout --kill-after=0.2s 1s awww query >/dev/null 2>&1 && return 0
     done
     printf 'awww did not become ready; check awww-daemon.service.\n' >&2
     return 1
 }
 
-# One compositor snapshot supplies routing and animation pacing. Returning both
-# lists together avoids races and three monitor queries per wallpaper send.
+# One compositor snapshot supplies routing, pacing and the animation switch.
+# Returning them together avoids extra monitor queries per wallpaper send.
 _awww_routes() {
     local payload="" src=""
     if [ -n "${HYPRLAND_INSTANCE_SIGNATURE:-}" ] && command -v hyprctl >/dev/null 2>&1; then
-        payload=$(hyprctl monitors -j 2>/dev/null) || payload=""
+        payload=$(hyprctl -j --batch 'monitors; getoption animations:enabled' 2>/dev/null) || payload=""
         [ -n "$payload" ] && src=hyprland
     fi
     printf '%s' "$payload" | python3 -c '
 import json, re, sys
 src, pattern = sys.argv[1:3]
 try:
-    data = json.load(sys.stdin)
+    # hyprctl batch returns adjacent JSON documents, not one enclosing array.
+    decoder = json.JSONDecoder()
+    text = sys.stdin.read().lstrip()
+    data, end = decoder.raw_decode(text)
+    rest = text[end:].lstrip()
+    try:
+        # An unknown option is plain text ("no such option"), even with -j.
+        options = decoder.raw_decode(rest)[0] if rest else {}
+    except ValueError:
+        options = {}
+    switch = options.get("bool", options.get("int")) if isinstance(options, dict) else None
+    motion = True
+    if isinstance(switch, bool):
+        motion = switch
+    elif type(switch) is int:
+        motion = switch != 0
     # An empty pattern matches everything; it means "no blackout", not "all".
     rx = re.compile(pattern, re.I) if pattern else None
     hit = lambda name, desc: bool(rx and rx.search(name + " " + desc))
@@ -54,16 +92,15 @@ try:
     blackout = [name for name, desc, rate in monitors if name and hit(name, desc)]
     fps = min(240, max(60, round(max((float(rate) for _, rate in wallpaper), default=60))))
 except (ValueError, TypeError, KeyError, IndexError, AttributeError, OverflowError, re.error):
-    wallpaper, blackout, fps = [], [], 60
+    wallpaper, blackout, fps, motion = [], [], 60, True
 print(",".join(name for name, _ in wallpaper))
 print(",".join(blackout))
 print(fps)
-' "$src" "$AWWW_BLACKOUT_MATCH" 2>/dev/null || printf '\n\n60\n'
+print(1 if motion else 0)
+' "$src" "$AWWW_BLACKOUT_MATCH" 2>/dev/null || printf '\n\n60\n1\n'
 }
 
 awww_blackout_csv() { _awww_routes | sed -n '2p'; }
-awww_wallpaper_csv() { _awww_routes | sed -n '1p'; }
-awww_wallpaper_fps() { _awww_routes | sed -n '3p'; }
 
 # One validated fit contract for login restore and failed-apply recovery.
 # Output one argument per line so callers can use mapfile without word splitting.
@@ -132,11 +169,18 @@ live_start() {
     [ -n "$WALLPAPER_LIVE_EGL_VENDOR" ] && env+=(-E "__EGL_VENDOR_LIBRARY_FILENAMES=$WALLPAPER_LIVE_EGL_VENDOR")
     mkdir -p -- "$_live_runtime" || return 1
     printf '%s\n' "$token" >"$_live_token" || return 1
+    local -a player=(systemd-run --user --quiet --collect --service-type=exec --unit=wallpaper-live "${env[@]}"
+        python3 "$(realpath -- "$_live_player")" run "$video" "$outputs")
+    # Restores (always instant) run inside a oneshot unit, which kills leftover
+    # children when its script exits, so an undelayed start cannot be backgrounded.
+    if [[ $delay =~ ^0*([.]0*)?$ ]]; then
+        timeout --kill-after=1s 5s "${player[@]}" 9>&- >/dev/null
+        return $?
+    fi
     (
         sleep "$delay"
         [ "$(cat "$_live_token" 2>/dev/null)" = "$token" ] || exit 0
-        systemd-run --user --quiet --collect --unit=wallpaper-live "${env[@]}" \
-            python3 "$(realpath -- "$_live_player")" run "$video" "$outputs"
+        "${player[@]}"
     ) 9>&- >/dev/null 2>&1 &
 }
 
@@ -170,13 +214,31 @@ awww_img_targeted() {
     # frame-rate arguments still win, including scripted overrides.
     local arg prev="" explicit_fps=false duration=0 ttype=""
     for arg in "$@"; do
-        case "$arg" in --transition-fps|--transition-fps=*) explicit_fps=true ;; esac
+        case "$arg" in
+            --transition-fps|--transition-fps=*) explicit_fps=true ;;
+            --transition-duration=*) duration=${arg#*=} ;;
+            --transition-type=*) ttype=${arg#*=} ;;
+        esac
         case "$prev" in
             --transition-duration) duration=$arg ;;
             --transition-type) ttype=$arg ;;
         esac
         prev=$arg
     done
+    if [ "${routes[3]:-1}" = 0 ]; then
+        # Respect Hyprland/Silere reduced motion, including explicit picker
+        # presets. Replace the option instead of sending duplicate clap flags.
+        local -a motion_args=()
+        while [ "$#" -gt 0 ]; do
+            case "$1" in
+                --transition-type) shift; [ "$#" -eq 0 ] || shift ;;
+                --transition-type=*) shift ;;
+                *) motion_args+=("$1"); shift ;;
+            esac
+        done
+        set -- "${motion_args[@]}" --transition-type none
+        ttype=none
+    fi
     [ "$ttype" = none ] && duration=0
     if ! $explicit_fps; then
         set -- "$@" --transition-fps "${routes[2]:-60}"

@@ -24,32 +24,36 @@ fit_state=${WALLPAPER_PICKER_FIT_STATE:-"$state_dir/wallpaper-picker/fit"}
 # is user-editable state and a stale or hand-edited value must not reach awww.
 mapfile -t saved_fit_args < <(awww_saved_fit_args "$fit_state")
 
-command -v awww >/dev/null 2>&1 || exit 0
-awww_ensure_ready || exit 1
+awww_ensure_ready || exit $?
 
 wallpaper=""
 if [ -r "$wallpaper_state" ]; then
     IFS= read -r wallpaper <"$wallpaper_state" || true
 fi
 
+status=0
 if [ -n "$wallpaper" ] && [ -f "$wallpaper" ]; then
-    # Self-heal the stable full-resolution path on login or after restoring a
-    # state directory on another machine.
-    ln -sfnT -- "$(still_for "$wallpaper")" "$wallpaper_link"
     # Hyprland can announce a ready monitor before awww has registered its
-    # output. Retry briefly instead of immediately replaying an older cache.
+    # output. Bound the quick retries before handing recovery back to systemd.
+    deadline=$((SECONDS + 3))
     for _attempt in {1..20}; do
-        if awww_img_targeted "$wallpaper" "${saved_fit_args[@]}" \
-            --transition-type none >/dev/null 2>&1; then
-            exit 0
+        if output=$(awww_img_targeted "$wallpaper" "${saved_fit_args[@]}" \
+            --transition-type none 2>&1); then
+            # Repair the lock-screen link only once the selection was restored.
+            poster=$(still_for "$wallpaper") || exit $?
+            exec ln -sfnT -- "$poster" "$wallpaper_link"
+        else
+            status=$?
         fi
+        ((SECONDS < deadline)) || break
         sleep 0.1
     done
-    awww restore >/dev/null 2>&1 || true
-else
-    awww restore >/dev/null 2>&1 || true
+    printf 'Could not restore the saved wallpaper (exit %s); trying the awww cache.\n' "$status" >&2
+    if [ -n "$output" ]; then printf '%s\n' "$output" >&2; fi
 fi
 
-# `awww restore` replays the daemon's own cache, which knows nothing about the
-# blackout split, so re-assert it on both paths.
-awww_apply_blackout
+# Restore the cache and blackout independently. A successful fallback can
+# keep the desktop usable while a failed saved selection still gets retried.
+awww restore >/dev/null || status=$?
+awww_apply_blackout || status=$?
+exit "$status"
