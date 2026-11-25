@@ -89,6 +89,22 @@ try {
   lib.writeCachedLibrary([wallpaper], scope);
   assert.deepEqual(lib.readCachedLibrary(scope), [wallpaper]);
   assert.equal(lib.readCachedLibrary({ ...scope, directory: "/other" }), null);
+  // The cache predates the last apply, so `current` follows the state file.
+  const other = { ...wallpaper, path: "/wallpapers/two.jpg", name: "two.jpg", current: true };
+  const currentFile = join(tempDir, "wallpaper-picker", "current");
+  lib.writeCachedLibrary([wallpaper, other], scope);
+  writeFileSync(currentFile, wallpaper.path + "\n");
+  assert.deepEqual(lib.readCachedLibrary(scope).map((w) => w.current), [true, false]);
+  // A current file the cache never saw is a miss, so the scan paints first...
+  const outside = join(tempDir, "outside.png");
+  writeFileSync(outside, "");
+  writeFileSync(currentFile, outside + "\n");
+  assert.equal(lib.readCachedLibrary(scope), null);
+  // ...unless the scan would leave it out anyway.
+  const noCurrent = { ...scope, includeCurrent: false };
+  lib.writeCachedLibrary([wallpaper, other], noCurrent);
+  assert.deepEqual(lib.readCachedLibrary(noCurrent).map((w) => w.current), [false, false]);
+  rmSync(currentFile);
 
   const archive = { ...wallpaper, path: "/wallpapers/Archive/two.jpg", folder: "Archive/dark", current: true };
   const library = [wallpaper, archive];
@@ -116,6 +132,11 @@ try {
   assert.deepEqual(lib.filterLibrary([wallpaper, red], "fav", new Set([red.path]), "red"), [red]);
   assert.deepEqual(lib.filterLibrary([{ ...wallpaper, color: "", group: "neutral" }], "", new Set(), "neutral"), []);
   assert.deepEqual(lib.filterLibrary([wallpaper, archive], "archive", new Set(), "blue"), [archive]);
+  // Recently Used keeps history order, skips files that left the library and honours the colour.
+  const older = { ...red, path: "/wallpapers/older.jpg" };
+  assert.deepEqual(lib.filterLibrary([wallpaper, older, archive], "recent", new Set(), "", [archive.path, "/gone.jpg", wallpaper.path]), [archive, wallpaper]);
+  assert.deepEqual(lib.filterLibrary([wallpaper, older], "recent", new Set(), "red", [wallpaper.path, older.path]), [older]);
+  assert.deepEqual(lib.filterLibrary([wallpaper], "recent", new Set()), []);
   assert.deepEqual(lib.searchLibrary([wallpaper, red, video], "BLUE city"), [wallpaper, video]);
   assert.deepEqual(lib.searchLibrary([wallpaper, red, video], "bl ct still"), [wallpaper]);
   assert.deepEqual(lib.searchLibrary([wallpaper, red, video], "live"), [video]);
@@ -192,6 +213,10 @@ try {
   const spacedPath = "/wallpapers/scene.jpg ";
   assert.equal(lib.writeFavourites(new Set([spacedPath])), true);
   assert.deepEqual(lib.readFavourites(), new Set([spacedPath]));
+  assert.deepEqual(lib.readHistory(), []);
+  writeFileSync(join(tempDir, "wallpaper-picker", "history"), "t1\t/a.jpg\nt2\t/b c.jpg\njunk\nt3\t/a.jpg\n\t/no-time.jpg\nt4\t\n");
+  assert.deepEqual(lib.readHistory(), ["/a.jpg", "/b c.jpg"]);
+  assert.deepEqual(lib.readHistory(1), ["/a.jpg"]);
 
   // Directory preferences resolve consistently with the scanner, including
   // aliases and trailing slashes, so metadata is looked up by the right key.

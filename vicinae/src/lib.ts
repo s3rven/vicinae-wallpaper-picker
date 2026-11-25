@@ -60,13 +60,7 @@ export type Wallpaper = {
   color: string;
   folder: string;
   mtime: number;
-  // Derived once, at scan time, not in the filters.
-  //
-  // The group used to be recomputed inside render: groupOf ran in the colour-rail
-  // memo, again in the visible-list memo on every filter change, and again per
-  // tile to build its search keywords — roughly 350 hex parses per keystroke on
-  // a 115-wallpaper library, to answer a question whose input never changes.
-  // Parsing each colour once here makes the filters plain field comparisons.
+  // The colour family, derived once at scan time so filters only compare fields.
   group: string;
   // Mean lightness 0-100 from the scanner, -1 while its colour pass is pending.
   brightness: number;
@@ -101,9 +95,14 @@ export function isArchived(wallpaper: Pick<Wallpaper, "folder">): boolean {
   return /^(?:archive|old)(?:\/|$)/i.test(wallpaper.folder);
 }
 
-export function filterLibrary(items: Wallpaper[], filter: string, favourites: Set<string>, colour = ""): Wallpaper[] {
+export function filterLibrary(items: Wallpaper[], filter: string, favourites: Set<string>, colour = "", recent: string[] = []): Wallpaper[] {
   if (colour) items = items.filter((w) => w.group === colour && Boolean(w.color));
   if (filter === "fav") return items.filter((w) => favourites.has(w.path));
+  // Newest first whatever the sort: the order is the point of this view.
+  if (filter === "recent") {
+    const byPath = new Map(items.map((w) => [w.path, w]));
+    return recent.flatMap((path) => byPath.get(path) ?? []);
+  }
   if (filter === "archive") return items.filter(isArchived);
   if (filter.startsWith("f:")) return items.filter((w) => w.folder === filter.slice(2));
   const active = items.filter((w) => !isArchived(w));
@@ -183,10 +182,9 @@ export function compareWallpaperNames(a: Wallpaper, b: Wallpaper): number {
   return nameCollator.compare(a.title || a.name, b.title || b.name);
 }
 
-// The unfiltered grid leads with the wallpaper on the desktop now, then the
-// favourites. Vicinae always opens a grid on its first tile (a Grid ignores
-// selectedItemId), so this is what makes the picker open on the current
-// wallpaper: Enter goes straight to its colours, and arrows start from it.
+// The current wallpaper, then the favourites. Vicinae opens a grid on its first
+// tile (it ignores selectedItemId), so this is what opens the picker on the
+// wallpaper on the desktop.
 export function pinnedFirst(items: Wallpaper[], favourites: Set<string>): Wallpaper[] {
   const rank = (w: Wallpaper) => (w.current ? 0 : favourites.has(w.path) ? 1 : 2);
   return items.some((w) => rank(w) < 2) ? [...items].sort((a, b) => rank(a) - rank(b)) : items;
@@ -270,18 +268,18 @@ export type ApplyOptions = {
 };
 
 export const TRANSITIONS = [
-  { id: "soft-fade", title: "Fade", description: "A short, smooth crossfade." },
-  { id: "diagonal-wipe", title: "Diagonal wipe", description: "A quick diagonal sweep." },
-  { id: "spotlight-wave", title: "Spotlight", description: "A circle opens from the centre." },
-  { id: "iris-close", title: "Iris", description: "A circle closes towards the centre." },
-  { id: "wave-sweep", title: "Wave", description: "A wavy sweep from top to bottom." },
-  { id: "left", title: "From left", description: "A reveal from left to right." },
-  { id: "right", title: "From right", description: "A reveal from right to left." },
-  { id: "top", title: "From top", description: "A reveal from top to bottom." },
-  { id: "bottom", title: "From bottom", description: "A reveal from bottom to top." },
-  { id: "any", title: "Random origin", description: "A circle opens from a different point each time." },
-  { id: "random", title: "Random effect", description: "awww chooses an effect for each change." },
-  { id: "none", title: "None", description: "Apply instantly." },
+  { id: "soft-fade", title: "Fade" },
+  { id: "diagonal-wipe", title: "Diagonal wipe" },
+  { id: "spotlight-wave", title: "Spotlight" },
+  { id: "iris-close", title: "Iris" },
+  { id: "wave-sweep", title: "Wave" },
+  { id: "left", title: "From left" },
+  { id: "right", title: "From right" },
+  { id: "top", title: "From top" },
+  { id: "bottom", title: "From bottom" },
+  { id: "any", title: "Random origin" },
+  { id: "random", title: "Random effect" },
+  { id: "none", title: "None" },
 ] as const;
 export type Transition = (typeof TRANSITIONS)[number]["id"];
 export function transitionOf(value: unknown): Transition {
@@ -552,6 +550,22 @@ export function rememberSolidColour(value: string): void {
 export const FAVOURITES_FILE =
   process.env.WALLPAPER_PICKER_FAVOURITES || join(STATE_DIR, "wallpaper-picker", "favourites");
 
+// apply-wallpaper.sh appends "TIME<TAB>PATH" per change; newest distinct paths first.
+export function readHistory(limit = 60): string[] {
+  let lines: string[];
+  try {
+    lines = readFileSync(process.env.WALLPAPER_PICKER_HISTORY || join(STATE_DIR, "wallpaper-picker", "history"), "utf8").split("\n");
+  } catch {
+    return [];
+  }
+  const recent = new Set<string>();
+  for (let i = lines.length - 1; i >= 0 && recent.size < limit; i--) {
+    const tab = lines[i].indexOf("\t");
+    if (tab > 0 && tab < lines[i].length - 1) recent.add(lines[i].slice(tab + 1));
+  }
+  return [...recent];
+}
+
 export function readFavourites(): Set<string> {
   try {
     return new Set(
@@ -640,12 +654,8 @@ export async function liveControl(...args: string[]): Promise<boolean> {
   }
 }
 
-// Buckets a dominant colour into a named family, so the library can be narrowed
-// to "the blue ones". Ported from the picker's ColorGroups singleton, including
-// the two-threshold neutral test: absolute chroma alone calls every dim navy
-// grey, relative saturation alone promotes near-black noise to a confident hue,
-// and requiring both is what puts a dark blue wallpaper in blue while a charcoal
-// one still lands in neutral.
+// A dominant colour's family, for "the blue ones". Neutral needs both tests:
+// chroma alone calls dim navy grey, saturation alone turns near-black noise into a hue.
 export const COLOR_GROUPS = [
   "red", "orange", "yellow", "green", "teal", "blue", "purple", "pink", "neutral",
 ] as const;
@@ -730,21 +740,11 @@ export function writeView(view: View): void {
 // ---- library cache ---------------------------------------------------------
 
 
-// No expiry. This exists to skip the empty grid on open, not to avoid scanning:
-// the real scan always runs and replaces the first paint about 0.1 s later. The
-// five-minute TTL this had only bounded that tenth of a second of staleness, and
-// most opens come further apart, so they still opened empty: 164 ms to the grid
-// against 84 ms from the cache (2026-11-10, 178 wallpapers).
+// No expiry: this only paints the first frame, and the real scan always runs
+// right after (84 ms to the grid from the cache, 164 ms without).
 const cache = new Cache({ namespace: "library" });
 
-// The version is in the key because the read below promises that a
-// version-skewed entry is a cache miss, and the shape check alone cannot
-// deliver that: a list written before `group` and `hue` were derived at scan
-// time still parses as an array of objects, so it comes back accepted with
-// those fields undefined. That is not a crash - the real scan overwrites it a
-// tenth of a second later - but until it lands the colour rail is empty and
-// the colour filter matches nothing, which reads as the feature being broken.
-// Bump this whenever a field is added to Wallpaper.
+// Bump when Wallpaper changes meaning, so an older entry reads as a cache miss.
 const KEY = "wallpapers.v4";
 
 type CachedLibrary = {
@@ -783,6 +783,13 @@ function isWallpaper(value: unknown): value is Wallpaper {
   );
 }
 
+// The wallpaper on the desktop now, as scan-wallpapers.sh reads it.
+function currentWallpaper(): string {
+  try {
+    return readFileSync(process.env.WALLPAPER_STATE_FILE || join(STATE_DIR, "wallpaper-picker", "current"), "utf8").split("\n")[0];
+  } catch { return ""; }
+}
+
 export function readCachedLibrary(options: ScanOptions = {}): Wallpaper[] | null {
   try {
     const raw = cache.get(KEY);
@@ -791,9 +798,14 @@ export function readCachedLibrary(options: ScanOptions = {}): Wallpaper[] | null
     if (!parsed || typeof parsed !== "object") return null;
     const entry = parsed as Partial<CachedLibrary>;
     if (JSON.stringify(entry.scope) !== JSON.stringify(scanScope(options))) return null;
-    return Array.isArray(entry.wallpapers) && entry.wallpapers.length > 0 && entry.wallpapers.every(isWallpaper)
-      ? entry.wallpapers
-      : null;
+    if (!Array.isArray(entry.wallpapers) || entry.wallpapers.length === 0 || !entry.wallpapers.every(isWallpaper)) return null;
+    // The cache predates the last apply. A stale `current` paints the old wallpaper
+    // first; the scan then reorders the grid under Vicinae's unreported highlight.
+    const now = currentWallpaper();
+    const list = entry.wallpapers.map((w) => w.current === (w.path === now) ? w : { ...w, current: w.path === now });
+    // A current file outside the cached list arrives with the scan: start empty instead.
+    const unseen = now !== "" && options.includeCurrent !== false && existsSync(now) && !list.some((w) => w.current);
+    return unseen ? null : list;
   } catch {
     // A corrupt or version-skewed entry is a cache miss, never a crash.
     return null;

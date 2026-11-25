@@ -25,7 +25,8 @@ export default function SolidColour({ options }: { options?: ApplyOptions }) {
       const path = await createSolidWallpaper(hex);
       if (!applyWallpaper(path, { ...(options ?? commandOptions().apply), resize: "stretch" })) throw new Error("Could not start the wallpaper backend.");
       rememberSolidColour(hex);
-      await closeMainWindow();
+      // The colour is already set; a close racing the window teardown is not a failure.
+      await closeMainWindow().catch(() => undefined);
     } catch (error) {
       await showToast({ style: Toast.Style.Failure, title: "Could not set colour", message: String(error) }).catch(() => undefined);
     } finally { setBusy(false); }

@@ -46,6 +46,7 @@ import {
   readLiveStatus,
   rememberLiveStatus,
   readFavourites,
+  readHistory,
   readView,
   scanWallpapers,
   searchLibrary,
@@ -58,16 +59,9 @@ import {
 import SolidColour from "./solid-colour";
 import WallpaperColours from "./wallpaper-colours";
 
-// Sorting and grouping are one control here, not two.
-//
-// Each sort answers a question - what did I add lately, what is it called,
-// which ones are blue - and the only section headings worth reading are that
-// same question's axis. Deriving the grouping from the sort means the headers
-// always explain the order instead of cutting across it, and the view keeps one
-// knob rather than an order-by/group-by matrix nobody wants to operate.
-//
-// Colour is the default: a grid that flows through the families reads as one
-// collection, where date order scatters unrelated colours side by side.
+// One control: each sort brings its own section headings (date, folder or colour
+// family), so headers always explain the order. Colour is the default, because
+// date order scatters unrelated colours side by side.
 type Sort = "recent" | "name" | "hue";
 type GroupBy = "date" | "folder" | "colour";
 type ResizeMode = "crop" | "fit" | "stretch" | "no";
@@ -126,13 +120,8 @@ const AGES: [string, number][] = [
 ];
 const EARLIER = "Earlier";
 
-// The library's crop, as the grid can express it.
-//
-// image-lib.sh renders every thumbnail to 800x500 (16:10, a common laptop
-// aspect). Grid.AspectRatio has no 16/10, and of what it does offer
-// ("1", "3/2", "4/3", "16/9", ...) 3/2 is the nearest: 1.5 against 1.6, where
-// 16/9 would be 1.78 and visibly wrong. Paired with Fill, the cell crops the
-// thumbnail by that 6% rather than letterboxing it.
+// Thumbnails are 800x500 (16:10). Grid.AspectRatio has no 16/10 and 3/2 is the
+// nearest it offers; with Fill the cell crops 6% instead of letterboxing.
 const ASPECT: Grid.AspectRatio = "3/2";
 
 // scan-wallpapers.sh files everything directly under the wallpaper directory as
@@ -141,21 +130,10 @@ const folderLabel = (folder: string) => folder === "Root" ? "Unsorted" : folder 
 
 const folderFilter = (folder: string) => `f:${folder}`;
 
-// Every apply ends the same way: hand the work to the backend, then get out of
-// the way. The one case worth interrupting for is a wallpaper that is no longer
-// on disk - the grid paints from the cache before the rescan lands, and the
-// library is a directory someone prunes by hand, so a file that has gone can
-// still be selectable for a moment. The apply is detached with stdio ignored,
-// so without this the window closes, the desktop does not change, and nothing
-// anywhere says why.
-//
-// Every onAction in this host is typed () => void: nothing here ever awaits or
-// catches what a handler returns, so a rejected promise from inside one is
-// unhandled by definition. closeMainWindow() is IPC to the host process, which
-// can reject if the window is already tearing down - a race that only some
-// closes hit - and an unhandled rejection kills this worker outright (Node's
-// default since v15). Swallowing both awaits here is what keeps a lost race
-// a no-op instead of a crash the next apply has to pay for as a cold restart.
+// The apply is detached, so a file pruned since the cached paint must be caught
+// here, or the window closes and nothing changes. Both awaits swallow errors: an
+// unhandled rejection in an onAction kills the worker, and closeMainWindow()
+// can lose a race with the window's own teardown.
 async function applyAndClose(path: string, options?: ApplyOptions): Promise<void> {
   const missing = missingTools({ path });
   if (missing.length) {
@@ -213,22 +191,15 @@ function groupWallpapers(items: Wallpaper[], by: GroupBy, now: number, minimum: 
   return by === "date" ? mergeThinBuckets(sections, minimum) : sections;
 }
 
-// A section costs a heading and a whole row of grid whatever it holds, so a
-// bucket with two wallpapers in it spends more space on saying "This Week" than
-// on the wallpapers. Only the date buckets get this treatment: their boundaries
-// are arbitrary, and every bounded label is a max-age window - "This Month" is
-// true of anything added this week - so a thin bucket can be folded into the
-// next older bounded one and take that one's name. The open-ended "Earlier"
-// bucket stays separate so it never claims a recent wallpaper. Colour and
-// folder headings name something real, and a two-wallpaper "Purple" is still
-// the answer to the question the hue sort asked.
+// A section costs a heading and a row, so a thin date bucket folds into the next
+// older bounded one ("This Month" is still true of this week). "Earlier" stays
+// separate so it never claims a recent wallpaper. Colour and folder sections
+// name something real and are never merged.
 function mergeThinBuckets(sections: Group[], minimum: number): Group[] {
   const out: Group[] = [];
   let carry: Wallpaper[] = [];
   for (const [index, s] of sections.entries()) {
-    // "Earlier" is an open-ended bucket. Never pour newer items into it: that
-    // makes a valid date label lie. Flush any carried recent buckets under the
-    // oldest recent label first, then keep Earlier on its own.
+    // Carried recent items go under the oldest recent label, never under Earlier.
     if (s.key === EARLIER) {
       if (carry.length > 0) {
         const previous = sections[index - 1];
@@ -250,9 +221,7 @@ function mergeThinBuckets(sections: Group[], minimum: number): Group[] {
     }
     out.push({ ...s, items });
   }
-  // Whatever is left is the oldest recent handful. Keep its oldest source
-  // label; it is still a truthful max-age window and never silently becomes
-  // "Earlier".
+  // The oldest recent handful keeps its own label rather than becoming Earlier.
   if (carry.length > 0) {
     const tail = [...sections].reverse().find((section) => section.key !== EARLIER);
     out.push({ key: tail?.key ?? EARLIER, title: tail?.title ?? EARLIER, items: carry });
@@ -315,10 +284,7 @@ export default function SetWallpaper({ fallbackText = "" }: Partial<LaunchProps>
     resize: preferenceValue(prefs.resizeMode, RESIZE_VALUES, "crop"),
     cropGravity: preferenceValue(prefs.cropGravity, GRAVITY_VALUES, "center"),
   };
-  // A preference picks which mode the picker opens in, but the two modes are
-  // opposites - type to filter, or keep every tile in place for keyboard nav -
-  // and there was no way to get the other one without leaving to Extension
-  // Preferences and back. Ctrl+Shift+B flips it live for the rest of this session.
+  // The preference picks the opening mode; Ctrl+Shift+B flips it for this session.
   const [browseMode, setBrowseMode] = useState(
     () => preferenceValue(prefs.searchMode, SEARCH_MODE_VALUES, "search") === "browse",
   );
@@ -328,6 +294,8 @@ export default function SetWallpaper({ fallbackText = "" }: Partial<LaunchProps>
   );
   useEffect(() => writeView({ filter, sort, colour, transition: transitionOverride, duration: durationOverride }), [filter, sort, colour, transitionOverride, durationOverride]);
   const [favourites, setFavourites] = useState<Set<string>>(() => readFavourites());
+  // The picker closes on apply, so the log read at open stays current.
+  const [recent] = useState(() => readHistory());
   const [live, setLive] = useState<LiveStatus | null>(readLiveStatus);
   const [selectedPath, setSelectedPath] = useState("");
   // The panel below is rebuilt only after Vicinae receives the next render (throttled
@@ -341,13 +309,8 @@ export default function SetWallpaper({ fallbackText = "" }: Partial<LaunchProps>
   const columns = Number(preferenceValue(prefs.columns, COLUMN_VALUES, "4"));
   const mode = SORTS.find((s) => s.id === sort) ?? SORTS[0];
 
-  // Set on the way in as well as cleared on the way out. The ref is only
-  // initialised on the first render, so a host that runs effects twice - React
-  // StrictMode does exactly this - would leave it false after the first
-  // cleanup and never restore it, and every scan result would then be
-  // discarded by the guards below: a grid stuck empty behind a spinner that
-  // never stops. Vicinae does not do that today; this costs one line and stops
-  // it from being a question the next time the host is upgraded.
+  // Also set on mount: a host that runs effects twice (StrictMode) would
+  // otherwise leave it false and drop every scan result.
   const alive = useRef(true);
   const scanRequest = useRef(0);
   const cachePollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -422,13 +385,7 @@ export default function SetWallpaper({ fallbackText = "" }: Partial<LaunchProps>
       });
   }, [scanOptions, pollCache]);
 
-  // Paint from the last scan, then refresh in the background.
-  //
-  // The scan is only ~110ms, but it is 110ms of empty grid on every single open,
-  // and the answer is almost always identical to last time. Showing the cached
-  // library immediately and quietly replacing it when the real scan lands makes
-  // the command feel instant without ever showing stale data for longer than the
-  // scan takes. A miss simply falls through to the old behaviour.
+  // Said once on open, so a missing tool is known before the first apply fails.
   useEffect(() => {
     const missing = missingTools();
     if (missing.length > 0) {
@@ -440,6 +397,7 @@ export default function SetWallpaper({ fallbackText = "" }: Partial<LaunchProps>
     }
   }, []);
 
+  // The grid painted from the cache above; this scan replaces it only if something changed.
   useEffect(() => refresh(), [refresh]);
 
   const sorted = useMemo(() => {
@@ -463,8 +421,9 @@ export default function SetWallpaper({ fallbackText = "" }: Partial<LaunchProps>
     () => colourScope.filter((w) => favourites.has(w.path)).length,
     [colourScope, favourites],
   );
+  const recentCount = useMemo(() => filterLibrary(colourScope, "recent", favourites, "", recent).length, [colourScope, favourites, recent]);
 
-  const baseFiltered = useMemo(() => filterLibrary(sorted, filter, favourites), [sorted, filter, favourites]);
+  const baseFiltered = useMemo(() => filterLibrary(sorted, filter, favourites, "", recent), [sorted, filter, favourites, recent]);
   // Counted within the chosen collection. A family with nothing in it only
   // leads to an empty grid, so it is listed only while colours are still being
   // detected or while it is the chosen one. Each family keeps its own swatch:
@@ -477,30 +436,32 @@ export default function SetWallpaper({ fallbackText = "" }: Partial<LaunchProps>
       .filter((c) => c.count > 0 || c.name === colour || colourDetectionPending);
   }, [baseFiltered, colour, colourDetectionPending]);
 
-  const filtered = useMemo(() => filterLibrary(sorted, filter, favourites, colour), [sorted, filter, favourites, colour]);
+  const filtered = useMemo(() => filterLibrary(sorted, filter, favourites, colour, recent), [sorted, filter, favourites, colour, recent]);
   const searchIndex = useMemo(() => createSearchIndex(wallpapers), [wallpapers]);
   const shown = useMemo(() => searchLibrary(filtered, browseMode ? "" : query, searchIndex), [filtered, browseMode, query, searchIndex]);
   const searching = !browseMode && query.trim().length > 0;
 
   const randomCandidates = useMemo(() => shown.filter((w) => !w.current && !isLive(w.path)), [shown]);
 
-  // The current wallpaper and the favourites ride at the top of the unfiltered
-  // library and are taken out of the sections below it, so the picker opens on
-  // what is on the desktop and no tile ever appears twice. Under a filter the
-  // pinned row is dropped: the dropdown has already answered "which subset",
-  // and re-splitting that subset by a second rule would be two questions in one list.
+  // The whole-library views (All, Stills, Live) lead with the current wallpaper
+  // and the favourites, so the picker opens on what is on the desktop. A folder,
+  // the favourites or a search already chose a subset and keeps its own order.
+  const pinTop = !searching && (filter === "" || filter === "stills" || filter === "live");
   const isPinned = useCallback((w: Wallpaper) => w.current || favourites.has(w.path), [favourites]);
   const groups = useMemo(() => {
     if (searching) return [{ key: "results", title: "Search Results", items: shown }];
     const now = Date.now();
-    const pinned = filter === "" ? pinnedFirst(shown.filter(isPinned), favourites) : [];
+    const pinned = pinTop ? pinnedFirst(shown.filter(isPinned), favourites) : [];
     const rest = pinned.length > 0 ? shown.filter((w) => !isPinned(w)) : shown;
     const sections = groupWallpapers(rest, mode.group, now, columns);
     const title = pinned.some((w) => favourites.has(w.path)) ? (pinned.some((w) => w.current) ? "Current and Favourites" : "Favourites") : "Current";
     return pinned.length > 0 ? [{ key: "pinned", title, items: pinned }, ...sections] : sections;
-  }, [shown, mode.group, favourites, filter, columns, searching, isPinned]);
+  }, [shown, mode.group, favourites, pinTop, columns, searching, isPinned]);
 
-  const flatItems = useMemo(() => filter === "" && !searching ? pinnedFirst(shown, favourites) : shown, [shown, favourites, filter, searching]);
+  const flatItems = useMemo(() => pinTop ? pinnedFirst(shown, favourites) : shown, [shown, favourites, pinTop]);
+  // When the tiles reorder, Vicinae keeps its highlight on the same index and
+  // reports nothing, so an id reported for the old order must not steer Enter.
+  useEffect(() => { if (!selectedPath) reported.current = ""; }, [flatItems, groups]);
   const selected = useMemo(() => shown.find((w) => w.path === selectedPath) ??
     (layoutMode === "flat" ? flatItems[0] : groups[0]?.items[0]), [shown, selectedPath, flatItems, groups, layoutMode]);
 
@@ -572,12 +533,7 @@ export default function SetWallpaper({ fallbackText = "" }: Partial<LaunchProps>
     );
   }
 
-  // Shared by every tile so the sections cannot drift apart from each other.
-  //
-  // Grouped rather than listed flat: the first section is what Enter and
-  // Shift+Enter already do, the second acts on the file under the cursor and the
-  // third changes the view itself. The panel is searchable, so the grouping is
-  // for the eye: wallpaper actions stay separate from library controls.
+  // One panel for the whole grid: applying first, then the selected file, then the view.
   function tileActions(w: Wallpaper) {
     const target = () => shown.find((x) => x.path === reported.current) ?? w;
     const starred = favourites.has(w.path);
@@ -646,11 +602,7 @@ export default function SetWallpaper({ fallbackText = "" }: Partial<LaunchProps>
           {(filter || colour || searching) && clearFiltersAction()}
           {colourActions()}
           {colour && <Action title="Clear Colour Filter" icon={Icon.Swatch} onAction={() => setColour("")} />}
-          {/* A submenu rather than the cycle this used to be: cmd+S three times
-              to reach the sort you wanted is a guessing game, and the cycle's
-              title could only ever name the NEXT order, never the current one.
-              Here the three are all visible at once and the active one is
-              ticked. */}
+          {/* A submenu, so the current sort is ticked instead of guessed. */}
           <ActionPanel.Submenu
             title="Sort By"
             icon={Icon.BulletPoints}
@@ -712,20 +664,9 @@ export default function SetWallpaper({ fallbackText = "" }: Partial<LaunchProps>
   }
 
   function tile(w: Wallpaper) {
-    // Pictures, not a file list. Every tile used to print its filename and a
-    // detail line, and almost none of those names are words - see readableName.
-    // Vicinae only reserves a text strip on rows that have text, so a text-free
-    // tile gives the whole row back to the image: nearly a full extra row of
-    // previews fits in the launcher.
-    //
-    // State you cannot see in the picture - the wallpaper on the desktop now,
-    // the starred ones - no longer costs a label either. A label row made its
-    // row taller than the rest and cut the last visible row in half, and
-    // Vicinae draws a grid accessory in that same text row, so a badge is no
-    // cheaper. Instead the current wallpaper and the favourites lead the
-    // unfiltered grid, the footer names the selected tile with its state, and
-    // the tooltip carries it too. Under the favourites filter every tile is
-    // one, so the star would say nothing there.
+    // No title, subtitle or accessory: any text adds a strip to the row and costs
+    // most of a row of previews. Names and state live in the tooltip and footer.
+    // Under the favourites filter every tile is one, so the star says nothing.
     const starred = favourites.has(w.path) && filter !== "fav";
     const name = w.title || readableName(w.name);
     const preview = wallpaperPreview(w, canCreatePreviews);
@@ -761,6 +702,7 @@ export default function SetWallpaper({ fallbackText = "" }: Partial<LaunchProps>
       ? "All"
       : filter === "fav"
         ? "Favourites"
+        : filter === "recent" ? "Recently Used"
         : filter === "archive" ? "Archive"
           : filter === "live" ? "Live Wallpapers"
           : filter === "stills" ? "Still Wallpapers"
@@ -825,6 +767,7 @@ export default function SetWallpaper({ fallbackText = "" }: Partial<LaunchProps>
             {(hasLive || filter === "live") && <Grid.Dropdown.Item title={`Live (${liveCount})`} value="live" icon={Icon.Video} />}
             <Grid.Dropdown.Item title={`Stills (${activeCount - liveCount})`} value="stills" icon={Icon.Image} />
             <Grid.Dropdown.Item title={`Favourites (${favouriteCount})`} value="fav" icon={Icon.Star} />
+            {(recentCount > 0 || filter === "recent") && <Grid.Dropdown.Item title={`Recently Used (${recentCount})`} value="recent" icon={Icon.ArrowCounterClockwise} />}
             {(archiveCount > 0 || filter === "archive") && <Grid.Dropdown.Item title={`Archive (${archiveCount})`} value="archive" icon={Icon.Box} />}
           </Grid.Dropdown.Section>
           <Grid.Dropdown.Section title="Collections">
@@ -856,6 +799,8 @@ export default function SetWallpaper({ fallbackText = "" }: Partial<LaunchProps>
               ? "Try another search or clear it to see this collection."
               : filter === "fav"
                 ? "Press Ctrl+F on any wallpaper to keep it at the top of the library."
+                : filter === "recent"
+                  ? "Wallpapers you set show up here, newest first."
                 : colour && !canCreatePreviews
                     ? "Install ImageMagick, then refresh the library to detect wallpaper colours."
                   : colour && wallpapers.some((w) => !w.color)
